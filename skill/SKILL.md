@@ -74,16 +74,71 @@ Anything with a `data-live="<key>"` attribute. sync.js detects the element type 
 
 Each `data-live="..."` key is independent. Two elements with the same key stay in sync with each other (useful for "summary at top + detail at bottom" patterns).
 
-## Read state from outside the browser
+## Read back state (agent-side)
 
-The state is plain JSON. To read what users have entered without opening the page:
+Once a page is live, its state is plain JSON. Read it back to see what users
+have done, aggregate across pages, or feed results into the next agent step.
+The canonical endpoint is `/pages/<key>/state` — same identifier as the page
+URL. The legacy `/state/pages/<key>` is byte-for-byte equivalent and still
+works.
+
+All three cookbooks use `-A "livehtml-agent-readback/1"` so the server access
+log can distinguish agent read-backs from browser traffic. Keep it.
+
+### Cookbook 1 — read one page's state
 
 ```bash
-curl http://192.168.130.12:39191/state/pages/<key>
-# {"task-1": true, "notes": "..."}
+curl -A "livehtml-agent-readback/1" \
+  http://192.168.130.12:39191/pages/<key>/state
+# {"task-1": true, "notes": "...", "status": "doing"}
 ```
 
-Useful for: collecting form submissions, post-processing annotations, feeding results back into the next agent step.
+The canonical "did the user actually fill it in / click it?" check. Common
+pattern: agent PUTs a page → user fills it → agent reads back to continue.
+
+### Cookbook 2 — aggregate across pages
+
+```bash
+# List keys, then fetch each page's state
+for key in $(curl -sA "livehtml-agent-readback/1" \
+                  http://192.168.130.12:39191/pages/ | jq -r '.[].key'); do
+  state=$(curl -sA "livehtml-agent-readback/1" \
+               "http://192.168.130.12:39191/pages/$key/state")
+  echo "$key: $state"
+done
+```
+
+Use for: "summarise every standup form filed today", "find which review pages
+are still empty", "collect all triage decisions across tickets".
+
+### Cookbook 3 — debug "the state isn't what I expected"
+
+Run these in order; the first miss tells you where things broke:
+
+```bash
+# Is the page even hosted?
+curl -sI -A "livehtml-agent-readback/1" \
+  http://192.168.130.12:39191/pages/<key> | head -1
+# 200 = HTML is there. 404 = key typo or PUT never landed.
+
+# What's in state right now?
+curl -sA "livehtml-agent-readback/1" \
+  http://192.168.130.12:39191/pages/<key>/state
+# {} = nobody has interacted yet, or DELETE cleared it.
+
+# Are the data-live keys what you expect?
+# Compare keys above to the data-live="..." attributes in your HTML.
+# Mismatch = typo or the element isn't a leaf interactive node.
+
+# Is anyone currently connected?
+curl -sA "livehtml-agent-readback/1" \
+  http://192.168.130.12:39191/rooms | jq '.[] | select(.room=="pages/<key>")'
+# peers > 0 = someone is viewing right now.
+```
+
+If state reads `{}` but the user swears they filled the form, ask them to
+open DevTools → Network → WS and confirm `set` messages fire when they type
+— that proves the browser-side `data-live` wiring is healthy.
 
 ## Managing pages
 

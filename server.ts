@@ -180,6 +180,35 @@ function errResp(msg: string, status: number) {
   return new Response(msg, { status, headers: CORS });
 }
 
+async function handleStateRoom(req: Request, room: string): Promise<Response | null> {
+  if (req.method === "GET") {
+    const state = await loadRoom(room);
+    return Response.json(state, { headers: CORS });
+  }
+  if (req.method === "PUT") {
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return new Response("invalid json", { status: 400, headers: CORS });
+    }
+    if (typeof body !== "object" || body === null || Array.isArray(body)) {
+      return new Response("body must be a JSON object", { status: 400, headers: CORS });
+    }
+    rooms.set(room, body as RoomState);
+    scheduleSave(room);
+    broadcast(room, { t: "replace", state: body, by: "http" });
+    return Response.json({ ok: true, room }, { headers: CORS });
+  }
+  if (req.method === "DELETE") {
+    rooms.set(room, {});
+    scheduleSave(room);
+    broadcast(room, { t: "replace", state: {}, by: "http" });
+    return Response.json({ ok: true, room }, { headers: CORS });
+  }
+  return null;
+}
+
 const server = Bun.serve({
   port: PORT,
 
@@ -289,8 +318,21 @@ echo "  Verify: ls $DEST/SKILL.md"
     }
 
     if (path.startsWith("/pages/")) {
+      const rest = path.slice("/pages/".length);
+
+      // /pages/<key>/state — alias for /state/pages/<key>, no MinIO needed
+      if (rest.endsWith("/state")) {
+        const rawKey = rest.slice(0, -"/state".length);
+        const key = sanitizePageKey(rawKey);
+        if (!key) return errResp("invalid key", 400);
+        const room = roomForPageKey(key);
+        const resp = await handleStateRoom(req, room);
+        if (resp) return resp;
+        return errResp("method not allowed", 405);
+      }
+
       if (!minio) return errResp("minio not configured", 503);
-      const key = sanitizePageKey(path.slice("/pages/".length));
+      const key = sanitizePageKey(rest);
       if (!key) return errResp("invalid key", 400);
 
       if (req.method === "PUT") {
@@ -342,31 +384,8 @@ echo "  Verify: ls $DEST/SKILL.md"
     if (path.startsWith("/state/")) {
       const raw = decodeURIComponent(path.slice("/state/".length));
       const room = sanitizeRoom(raw);
-      if (req.method === "GET") {
-        const state = await loadRoom(room);
-        return Response.json(state, { headers: CORS });
-      }
-      if (req.method === "PUT") {
-        let body: unknown;
-        try {
-          body = await req.json();
-        } catch {
-          return new Response("invalid json", { status: 400, headers: CORS });
-        }
-        if (typeof body !== "object" || body === null || Array.isArray(body)) {
-          return new Response("body must be a JSON object", { status: 400, headers: CORS });
-        }
-        rooms.set(room, body as RoomState);
-        scheduleSave(room);
-        broadcast(room, { t: "replace", state: body, by: "http" });
-        return Response.json({ ok: true, room }, { headers: CORS });
-      }
-      if (req.method === "DELETE") {
-        rooms.set(room, {});
-        scheduleSave(room);
-        broadcast(room, { t: "replace", state: {}, by: "http" });
-        return Response.json({ ok: true, room }, { headers: CORS });
-      }
+      const resp = await handleStateRoom(req, room);
+      if (resp) return resp;
     }
 
     return new Response("not found", { status: 404, headers: CORS });
