@@ -56,6 +56,33 @@ const writeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const writeChains = new Map<string, Promise<void>>();
 const peersByRoom = new Map<string, Set<ServerWebSocket<WsData>>>();
 
+// Phase C — per-key metadata kept parallel to `rooms` (flat). Disk
+// envelope: { version: 2, fields: { key: { v, ts, by } } }. Format
+// detection uses the top-level `version` field only, never field shape.
+type FieldMeta = { ts: string; by: string };
+const metaByRoom = new Map<string, Record<string, FieldMeta>>();
+
+function setKeyMeta(room: string, key: string, by: string) {
+  let m = metaByRoom.get(room);
+  if (!m) {
+    m = {};
+    metaByRoom.set(room, m);
+  }
+  m[key] = { ts: new Date().toISOString(), by };
+}
+
+function delKeyMeta(room: string, key: string) {
+  const m = metaByRoom.get(room);
+  if (m) delete m[key];
+}
+
+function replaceRoomMeta(room: string, keys: string[], by: string) {
+  const now = new Date().toISOString();
+  const m: Record<string, FieldMeta> = {};
+  for (const k of keys) m[k] = { ts: now, by };
+  metaByRoom.set(room, m);
+}
+
 function sanitizeRoom(name: string): string {
   let r = String(name ?? "")
     .replace(/\.\./g, "_")
@@ -74,15 +101,40 @@ async function loadRoom(room: string): Promise<RoomState> {
   const cached = rooms.get(room);
   if (cached) return cached;
   let state: RoomState = {};
+  let meta: Record<string, FieldMeta> = {};
   const file = roomFile(room);
   if (existsSync(file)) {
     try {
-      state = JSON.parse(await readFile(file, "utf8"));
+      const parsed = JSON.parse(await readFile(file, "utf8"));
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed) &&
+        parsed.version === 2 &&
+        parsed.fields &&
+        typeof parsed.fields === "object" &&
+        !Array.isArray(parsed.fields)
+      ) {
+        // New envelope format.
+        for (const [k, entry] of Object.entries(parsed.fields as Record<string, any>)) {
+          if (entry && typeof entry === "object" && "v" in entry) {
+            state[k] = entry.v;
+            meta[k] = {
+              ts: typeof entry.ts === "string" ? entry.ts : "",
+              by: typeof entry.by === "string" ? entry.by : "",
+            };
+          }
+        }
+      } else if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        // Legacy flat format. Meta stays empty until next write.
+        state = parsed as RoomState;
+      }
     } catch (e) {
       console.warn(`[warn] failed to parse ${file}, starting empty:`, e);
     }
   }
   rooms.set(room, state);
+  metaByRoom.set(room, meta);
   return state;
 }
 
@@ -101,9 +153,16 @@ async function doSave(room: string) {
   const next = prev
     .then(async () => {
       const state = rooms.get(room) ?? {};
+      const meta = metaByRoom.get(room) ?? {};
+      const fields: Record<string, { v: unknown; ts: string; by: string }> = {};
+      for (const k of Object.keys(state)) {
+        const m = meta[k];
+        fields[k] = { v: state[k], ts: m?.ts ?? "", by: m?.by ?? "" };
+      }
+      const envelope = { version: 2, fields };
       const file = roomFile(room);
       const tmp = file + ".tmp";
-      await writeFile(tmp, JSON.stringify(state, null, 2));
+      await writeFile(tmp, JSON.stringify(envelope, null, 2));
       await rename(tmp, file);
     })
     .catch((e) => console.error(`[error] save ${room}:`, e));
@@ -189,6 +248,16 @@ function errResp(msg: string, status: number) {
 async function handleStateRoom(req: Request, room: string): Promise<Response | null> {
   if (req.method === "GET") {
     const state = await loadRoom(room);
+    const url = new URL(req.url);
+    if (url.searchParams.get("meta") === "1") {
+      const meta = metaByRoom.get(room) ?? {};
+      const fields: Record<string, { v: unknown; ts: string; by: string }> = {};
+      for (const k of Object.keys(state)) {
+        const m = meta[k];
+        fields[k] = { v: state[k], ts: m?.ts ?? "", by: m?.by ?? "" };
+      }
+      return Response.json({ version: 2, fields }, { headers: CORS });
+    }
     return Response.json(state, { headers: CORS });
   }
   if (req.method === "PUT") {
@@ -202,6 +271,7 @@ async function handleStateRoom(req: Request, room: string): Promise<Response | n
       return new Response("body must be a JSON object", { status: 400, headers: CORS });
     }
     rooms.set(room, body as RoomState);
+    replaceRoomMeta(room, Object.keys(body as RoomState), "http");
     scheduleSave(room);
     broadcast(room, { t: "replace", state: body, by: "http" });
     bumpAndNotify(room);
@@ -209,6 +279,7 @@ async function handleStateRoom(req: Request, room: string): Promise<Response | n
   }
   if (req.method === "DELETE") {
     rooms.set(room, {});
+    metaByRoom.set(room, {});
     scheduleSave(room);
     broadcast(room, { t: "replace", state: {}, by: "http" });
     bumpAndNotify(room);
@@ -510,6 +581,7 @@ echo "  Verify: ls $DEST/SKILL.md"
         }
         const room = roomForPageKey(key);
         rooms.delete(room);
+        metaByRoom.delete(room);
         try { await unlink(roomFile(room)); } catch {}
         broadcast(room, { t: "replace", state: {}, by: "delete" });
         bumpAndNotify(room);
@@ -568,6 +640,7 @@ echo "  Verify: ls $DEST/SKILL.md"
       if (msg.t === "set" && typeof msg.key === "string") {
         const state = await loadRoom(peer.room);
         state[msg.key] = msg.v;
+        setKeyMeta(peer.room, msg.key, peer.id);
         scheduleSave(peer.room);
         broadcast(peer.room, { t: "set", key: msg.key, v: msg.v, by: peer.id }, ws);
         bumpAndNotify(peer.room);
@@ -577,6 +650,7 @@ echo "  Verify: ls $DEST/SKILL.md"
       if (msg.t === "del" && typeof msg.key === "string") {
         const state = await loadRoom(peer.room);
         delete state[msg.key];
+        delKeyMeta(peer.room, msg.key);
         scheduleSave(peer.room);
         broadcast(peer.room, { t: "del", key: msg.key, by: peer.id }, ws);
         bumpAndNotify(peer.room);

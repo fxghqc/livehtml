@@ -43,11 +43,11 @@ wait_for_port() {
 
 # Spawn `bun server.ts` on a random port. Each test gets its own STATE_DIR_TEST
 # under /tmp so tests don't pollute the dev state/.
+# random_port has a TOCTOU window — another process can grab the port between
+# our check and bun's listen(). Retry start up to 3 times on EADDRINUSE.
 start_server() {
-  SERVER_PORT=$(random_port) || return 1
   SERVER_STATE_TMP="$(mktemp -d -t livehtml-test-XXXXXX)/state"
   mkdir -p "$SERVER_STATE_TMP"
-  SERVER_LOG="$(mktemp -t livehtml-test-log-XXXXXX)"
 
   # server.ts hardcodes STATE_DIR = import.meta.dir + "/state", which resolves
   # symlinks back to the source dir. So we *copy* server.ts into the rundir
@@ -63,16 +63,31 @@ start_server() {
   ln -s "$REPO_ROOT/tsconfig.json" "$SERVER_RUNDIR/tsconfig.json"
   mkdir -p "$SERVER_RUNDIR/state"
 
-  # `exec` replaces the subshell with bun, so $! is the bun PID and a single
-  # kill takes the server down (instead of leaking an orphan bun process).
-  (cd "$SERVER_RUNDIR" && PORT="$SERVER_PORT" exec bun server.ts) >"$SERVER_LOG" 2>&1 &
-  SERVER_PID=$!
   trap stop_server EXIT INT TERM
-  if ! wait_for_port "$SERVER_PORT" 5; then
+
+  local attempt
+  for attempt in 1 2 3; do
+    SERVER_PORT=$(random_port) || return 1
+    SERVER_LOG="$(mktemp -t livehtml-test-log-XXXXXX)"
+    # `exec` replaces the subshell with bun, so $! is the bun PID and a single
+    # kill takes the server down (instead of leaking an orphan bun process).
+    (cd "$SERVER_RUNDIR" && PORT="$SERVER_PORT" exec bun server.ts) >"$SERVER_LOG" 2>&1 &
+    SERVER_PID=$!
+    if wait_for_port "$SERVER_PORT" 5; then
+      return 0
+    fi
+    # If bun aborted on EADDRINUSE, try a different port.
+    if grep -q "EADDRINUSE" "$SERVER_LOG" 2>/dev/null; then
+      kill "$SERVER_PID" 2>/dev/null || true
+      wait "$SERVER_PID" 2>/dev/null || true
+      continue
+    fi
     echo "--- server log ---"
     cat "$SERVER_LOG" || true
     return 1
-  fi
+  done
+  echo "start_server failed after 3 EADDRINUSE retries" >&2
+  return 1
 }
 
 stop_server() {
@@ -95,15 +110,26 @@ restart_server() {
     kill "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
   fi
-  SERVER_PORT=$(random_port) || return 1
-  SERVER_LOG="$(mktemp -t livehtml-test-log-XXXXXX)"
-  (cd "$SERVER_RUNDIR" && PORT="$SERVER_PORT" exec bun server.ts) >"$SERVER_LOG" 2>&1 &
-  SERVER_PID=$!
-  if ! wait_for_port "$SERVER_PORT" 5; then
+  local attempt
+  for attempt in 1 2 3; do
+    SERVER_PORT=$(random_port) || return 1
+    SERVER_LOG="$(mktemp -t livehtml-test-log-XXXXXX)"
+    (cd "$SERVER_RUNDIR" && PORT="$SERVER_PORT" exec bun server.ts) >"$SERVER_LOG" 2>&1 &
+    SERVER_PID=$!
+    if wait_for_port "$SERVER_PORT" 5; then
+      return 0
+    fi
+    if grep -q "EADDRINUSE" "$SERVER_LOG" 2>/dev/null; then
+      kill "$SERVER_PID" 2>/dev/null || true
+      wait "$SERVER_PID" 2>/dev/null || true
+      continue
+    fi
     echo "--- server log (restart) ---"
     cat "$SERVER_LOG" || true
     return 1
-  fi
+  done
+  echo "restart_server failed after 3 EADDRINUSE retries" >&2
+  return 1
 }
 
 # Disarm the EXIT trap so a test can hand-manage the server (e.g. SIGKILL it
