@@ -1,0 +1,46 @@
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: livehtml-minio
+    restart: unless-stopped
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-htmlsync}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-htmlsync-change-me}
+    ports:
+      - "39192:9000"   # S3 API
+      - "39193:9001"   # Web Console
+    volumes:
+      - ./minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local 2>/dev/null || curl -fsS http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  livehtml:
+    build: .
+    image: livehtml:latest
+    container_name: livehtml
+    restart: unless-stopped
+    userns_mode: host
+    depends_on:
+      minio:
+        condition: service_healthy
+    ports:
+      - "39191:39191"
+    environment:
+      PORT: 39191
+      MINIO_ENDPOINT: minio:9000
+      MINIO_USE_SSL: "false"
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-htmlsync}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-htmlsync-change-me}
+      MINIO_BUCKET: ${MINIO_BUCKET:-pages}
+    volumes:
+      - ./state:/app/state
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:39191/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

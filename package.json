@@ -1,0 +1,29 @@
+{
+  "name": "livehtml",
+  "version": "0.1.0",
+  "description": "给 agent 生成的 HTML 加多人协作状态：一行 script + data-live 属性",
+  "module": "server.ts",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "livehtml-skill": "./scripts/install-skill.cjs"
+  },
+  "files": [
+    "skill",
+    "scripts/install-skill.cjs"
+  ],
+  "scripts": {
+    "start": "bun server.ts",
+    "dev": "bun --hot server.ts",
+    "install-skill": "node scripts/install-skill.cjs install --link"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "minio": "^8.0.7"
+  }
+}

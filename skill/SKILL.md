@@ -1,0 +1,133 @@
+---
+name: livehtml
+description: Use livehtml to publish an agent-generated HTML page that has persistent, multi-user state — checkboxes, form fields, notes, ratings, and toggles sync in real-time across everyone who opens the URL, and survive page reloads. Trigger this skill whenever the user wants a shareable interactive HTML report, a team checklist or form, an annotatable document, a poll/feedback page, a milestone tracker, an agent report with markable items, or anything that fits "make a page the team can click/type into and the state sticks". Also trigger for phrasings like "host this HTML", "live HTML", "collaborative HTML", "shareable form", "让大家在网页上勾/填", "做个团队反馈页", "agent 报告加上协作能力". Even if the user just asks to "make an HTML report", if multi-user interaction or persistent state would clearly improve it, prefer livehtml over plain static HTML.
+---
+
+# livehtml
+
+A deployed service at `http://192.168.130.12:39191` that **hosts HTML files + provides real-time multi-user state**. One URL gets the team a shared interactive page; any element with `data-live="key"` automatically syncs across browsers.
+
+## When this skill saves the day
+
+- "Make a team checklist where everyone can tick items off"
+- "Host this report so the group can mark which findings to follow up on"
+- "Build a quick feedback form for tomorrow's lunch menu"
+- "A page where each of us picks our preferred time slot"
+- "Make this analysis interactive — let people annotate"
+
+## The two-step workflow
+
+1. **Write HTML** that includes the script tag and `data-live` attributes (template below)
+2. **PUT it** to `/pages/<key>`. The URL `http://192.168.130.12:39191/pages/<key>` is now live and shareable.
+
+That's it. No build step, no config, no MinIO access needed.
+
+## Minimum HTML boilerplate
+
+Copy this exactly into the HTML you generate. The `<script>` tag is the entire integration — no `<meta>` tags, no init code, no manual room id.
+
+```html
+<!doctype html>
+<html lang="zh">
+<head><meta charset="utf-8"><title>your title</title></head>
+<body>
+
+  <!-- your content; mark anything you want synced with data-live="<unique-key>" -->
+  <input type="checkbox" data-live="task-1"> 任务一
+  <textarea data-live="notes"></textarea>
+
+  <script src="http://192.168.130.12:39191/sync.js"></script>
+</body>
+</html>
+```
+
+**Why no meta tag for room id**: when the page is served at `/pages/foo/bar`, sync.js reads `location.pathname` and derives the room id automatically. URL = MinIO key = state room — one identifier for everything.
+
+## Upload
+
+```bash
+curl -X PUT --data-binary @page.html \
+  http://192.168.130.12:39191/pages/<key>
+```
+
+- `<key>` can include `/` for hierarchy (e.g. `team-x/2026-05-22/standup`)
+- Use stable, descriptive keys — they show up in the URL the team will see
+- Re-uploading with the same key overwrites the HTML but **keeps the state** (intentional — content can evolve, annotations persist)
+- Share the URL: `http://192.168.130.12:39191/pages/<key>`
+
+## What kinds of elements work
+
+Anything with a `data-live="<key>"` attribute. sync.js detects the element type automatically:
+
+| Element | What gets synced |
+|---|---|
+| `<input type="checkbox">` | `checked` (boolean) |
+| `<input type="radio">` | `checked` (boolean) |
+| `<input type="text\|email\|search\|url\|tel\|password">` | `value` (string) |
+| `<input type="number">` | `value` (number or null) |
+| `<input type="range">` | `value` (number) |
+| `<textarea>` | `value` (string) |
+| `<select>` | `value` (string; array if `multiple`) |
+| `<details>` | `open` (boolean) |
+| anything `contenteditable` | `innerHTML` |
+| anything else | `textContent` |
+
+Each `data-live="..."` key is independent. Two elements with the same key stay in sync with each other (useful for "summary at top + detail at bottom" patterns).
+
+## Read state from outside the browser
+
+The state is plain JSON. To read what users have entered without opening the page:
+
+```bash
+curl http://192.168.130.12:39191/state/pages/<key>
+# {"task-1": true, "notes": "..."}
+```
+
+Useful for: collecting form submissions, post-processing annotations, feeding results back into the next agent step.
+
+## Managing pages
+
+```bash
+# List everything published
+curl http://192.168.130.12:39191/pages/
+
+# Delete a page (also clears its state)
+curl -X DELETE http://192.168.130.12:39191/pages/<key>
+```
+
+## Debugging when something seems off
+
+1. **Open the page in a browser**. Look at the top-right floating chip:
+   - **Green dot**: WebSocket connected, you're in
+   - **Grey dot**: not connected — check that `http://192.168.130.12:39191` is reachable from that browser
+   - Number = how many people currently viewing
+2. **Check the state directly**: `curl http://192.168.130.12:39191/state/pages/<key>` — if your DOM changes don't show up here within a second of changing them, the `data-live` attribute likely isn't set or the key has a typo
+3. **Open browser DevTools → Network → WS**: should see one persistent connection to `/ws`, with `set`/`pres` messages flying when things change
+4. **List pages**: `curl http://192.168.130.12:39191/pages/` to confirm your PUT actually landed
+
+## Anti-patterns — don't do these
+
+- **Don't expect livehtml to inject anything**. What you PUT is exactly what gets served. The boilerplate must be in the HTML you generate; no `<script>` tag will appear by magic.
+- **Don't write directly to the MinIO backend**. The whole point of `PUT /pages/` is that one identifier covers HTML + state + URL. Bypassing it splits naming and causes orphan state.
+- **Don't use livehtml for true concurrent text editing**. The sync is last-write-wins, not CRDT. Two users typing simultaneously in the same `<textarea>` will overwrite each other character-by-character. Fine for "one person edits at a time" or "occasional updates"; not fine for Google-Docs-style collaboration. For that, use Yjs.
+- **Don't pick a random `data-live` key per render**. The key is the persistence identity. If you regenerate HTML with new keys, the old state becomes unreachable.
+- **Don't try to nest `data-live` containers**. Each attribute should be on a leaf interactive element. A `<div data-live="x">` containing other `data-live` elements gives unpredictable results.
+- **Don't put secrets in `data-live` values**. State is readable by anyone with the URL — there's no auth.
+
+## Optional: customizing user presence
+
+By default each user gets a random `User-XXXX` name shown in the chip. To set explicitly:
+
+```html
+<meta name="livehtml-user" content='{"name":"范晓"}'>
+```
+
+Or let the user click their name in the chip to change it (saved in their localStorage).
+
+## Resources beyond this skill
+
+- Full README and architecture: `/Users/fx/Projects/livehtml/README.md`
+- Source code: `/Users/fx/Projects/livehtml/` (server.ts, public/sync.js)
+- Live landing page with endpoint docs: `http://192.168.130.12:39191/`
+
+If your scenario doesn't fit the patterns here, read the README — it covers WebSocket protocol details, presence customization, multi-element same-key tricks, and the full HTTP API.

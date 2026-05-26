@@ -1,0 +1,26 @@
+{
+  "skill_name": "livehtml",
+  "evals": [
+    {
+      "id": 1,
+      "name": "team-checklist-zh",
+      "prompt": "我们小组下周要做一次部署演练，能不能做一个 HTML checklist 让大家在浏览器里勾选每一步是否完成？步骤大概是：1. 备份数据库；2. 停服务；3. 更新代码；4. 跑迁移脚本；5. 重启服务；6. 抽样验证。希望小组每个人打开都能看到最新进度。请把这个 checklist 部署到我们已有的 livehtml 服务（key 用 evals/checklist-test）然后告诉我 URL。",
+      "expected_output": "Agent generates a single HTML file with 6 checkboxes (each with a unique data-live key), includes the <script src=\"http://192.168.130.12:39191/sync.js\"></script> tag, uploads it via curl PUT to /pages/evals/checklist-test, and shares the URL http://192.168.130.12:39191/pages/evals/checklist-test. No <meta> tag for room id. No attempt to talk to MinIO directly.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "feedback-form-en",
+      "prompt": "Make me a quick interactive feedback form for the team lunch tomorrow. Three menu options (Pad Thai, Sushi, Tacos), people should be able to click which one they prefer (radio buttons OK or a separate vote count) and leave a one-line note. The whole team should see live updates. Deploy it to our livehtml service under key evals/lunch-form and give me the link.",
+      "expected_output": "Agent generates an HTML form with radio buttons (or checkboxes) for the 3 menu options each with unique data-live keys, a text input or textarea with data-live=\"note\", and the sync.js script tag. PUTs to /pages/evals/lunch-form. Returns the URL.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "name": "annotation-report-zh",
+      "prompt": "我把上周 5 个 PR 的 review 结果整理在下面，能否做成一个 HTML 页面，团队成员可以在每条结果旁边勾选 \"需要跟进\" 或写一句备注？发布到 livehtml，key 用 evals/pr-review-report。\n\nPR #101: 优化首页加载，建议合并\nPR #102: 修复登录 bug，需要补单测\nPR #103: 重构权限模块，scope 偏大，建议拆分\nPR #104: 升级依赖，机械改动，可合\nPR #105: 加新功能 X，缺设计文档",
+      "expected_output": "Agent generates an HTML page listing all 5 PRs. Each PR has a \"needs-followup\" checkbox (data-live=\"pr-101-followup\" etc.) and a note input (data-live=\"pr-101-note\"). Includes the sync.js script tag. PUTs to /pages/evals/pr-review-report.",
+      "files": []
+    }
+  ]
+}
