@@ -11,6 +11,12 @@ const PUBLIC_DIR = join(ROOT, "public");
 const EXAMPLES_DIR = join(ROOT, "examples");
 const SKILL_DIR = join(ROOT, "skill");
 const MAX_HTML_SIZE = 10 * 1024 * 1024; // 10MB
+const MAX_WAIT_SEC = 60;
+
+// Long-poll opaque etag is `<bootId>:<version>`. bootId changes every process
+// restart so clients whose etag predates restart get a `reset` response.
+const bootId = crypto.randomUUID();
+const versionByRoom = new Map<string, number>();
 
 await mkdir(STATE_DIR, { recursive: true });
 
@@ -198,15 +204,139 @@ async function handleStateRoom(req: Request, room: string): Promise<Response | n
     rooms.set(room, body as RoomState);
     scheduleSave(room);
     broadcast(room, { t: "replace", state: body, by: "http" });
+    bumpAndNotify(room);
     return Response.json({ ok: true, room }, { headers: CORS });
   }
   if (req.method === "DELETE") {
     rooms.set(room, {});
     scheduleSave(room);
     broadcast(room, { t: "replace", state: {}, by: "http" });
+    bumpAndNotify(room);
     return Response.json({ ok: true, room }, { headers: CORS });
   }
   return null;
+}
+
+// ---- Long-poll machinery (Phase B) ----
+
+type Waiter = {
+  resolveRaw: (resp: Response) => void;
+  timer: ReturnType<typeof setTimeout>;
+  signal: AbortSignal;
+  abortHandler: () => void;
+  room: string;
+  settled: boolean;
+};
+
+const waitersByRoom = new Map<string, Set<Waiter>>();
+
+function bumpAndNotify(room: string) {
+  const v = (versionByRoom.get(room) ?? 0) + 1;
+  versionByRoom.set(room, v);
+  notifyWaiters(room);
+}
+
+function notifyWaiters(room: string) {
+  const set = waitersByRoom.get(room);
+  if (!set || set.size === 0) return;
+  // Snapshot first — settleWaiter mutates the set.
+  const waiters = Array.from(set);
+  for (const w of waiters) settleWaiter(w, makeChangedResponse(room));
+}
+
+function settleWaiter(w: Waiter, resp: Response) {
+  if (w.settled) return;
+  w.settled = true;
+  clearTimeout(w.timer);
+  w.signal.removeEventListener("abort", w.abortHandler);
+  const set = waitersByRoom.get(w.room);
+  if (set) {
+    set.delete(w);
+    if (set.size === 0) waitersByRoom.delete(w.room);
+  }
+  w.resolveRaw(resp);
+}
+
+function makeChangedResponse(room: string): Response {
+  const state = rooms.get(room) ?? {};
+  const v = versionByRoom.get(room) ?? 0;
+  return Response.json(
+    { status: "changed", etag: `${bootId}:${v}`, version: v, state },
+    { headers: CORS },
+  );
+}
+
+function makeNotModifiedResponse(room: string): Response {
+  const v = versionByRoom.get(room) ?? 0;
+  return Response.json(
+    { status: "not_modified", etag: `${bootId}:${v}`, version: v },
+    { headers: CORS },
+  );
+}
+
+async function makeResetResponse(room: string): Promise<Response> {
+  const state = await loadRoom(room);
+  return Response.json(
+    { status: "reset", etag: `${bootId}:0`, version: 0, state },
+    { headers: CORS },
+  );
+}
+
+function parseWaitParam(s: string | null): number {
+  if (!s) return 0;
+  const n = Number(s);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(Math.floor(n), MAX_WAIT_SEC);
+}
+
+async function longPoll(
+  req: Request,
+  room: string,
+  waitSec: number,
+  since: string | null,
+): Promise<Response> {
+  const currentVer = versionByRoom.get(room) ?? 0;
+
+  if (!since) return makeResetResponse(room);
+  const colon = since.indexOf(":");
+  if (colon <= 0) return makeResetResponse(room);
+  const sinceBootId = since.slice(0, colon);
+  const sinceVer = Number(since.slice(colon + 1));
+  if (
+    sinceBootId !== bootId ||
+    !Number.isFinite(sinceVer) ||
+    sinceVer < 0 ||
+    sinceVer > currentVer
+  ) {
+    return makeResetResponse(room);
+  }
+
+  if (sinceVer < currentVer) return makeChangedResponse(room);
+
+  // sinceVer === currentVer → wait for the next change or timeout.
+  return new Promise<Response>((resolveRaw) => {
+    const signal = req.signal;
+    const w: Waiter = {
+      resolveRaw,
+      timer: undefined as unknown as ReturnType<typeof setTimeout>,
+      signal,
+      abortHandler: undefined as unknown as () => void,
+      room,
+      settled: false,
+    };
+    w.timer = setTimeout(
+      () => settleWaiter(w, makeNotModifiedResponse(room)),
+      waitSec * 1000,
+    );
+    w.abortHandler = () => settleWaiter(w, makeNotModifiedResponse(room));
+    signal.addEventListener("abort", w.abortHandler);
+    let set = waitersByRoom.get(room);
+    if (!set) {
+      set = new Set();
+      waitersByRoom.set(room, set);
+    }
+    set.add(w);
+  });
 }
 
 const server = Bun.serve({
@@ -320,12 +450,19 @@ echo "  Verify: ls $DEST/SKILL.md"
     if (path.startsWith("/pages/")) {
       const rest = path.slice("/pages/".length);
 
-      // /pages/<key>/state — alias for /state/pages/<key>, no MinIO needed
+      // /pages/<key>/state — alias for /state/pages/<key>, no MinIO needed.
+      // GET with ?wait=<sec> opts into long-poll envelope; otherwise plain.
       if (rest.endsWith("/state")) {
         const rawKey = rest.slice(0, -"/state".length);
         const key = sanitizePageKey(rawKey);
         if (!key) return errResp("invalid key", 400);
         const room = roomForPageKey(key);
+        if (req.method === "GET") {
+          const waitSec = parseWaitParam(url.searchParams.get("wait"));
+          if (waitSec > 0) {
+            return await longPoll(req, room, waitSec, url.searchParams.get("since"));
+          }
+        }
         const resp = await handleStateRoom(req, room);
         if (resp) return resp;
         return errResp("method not allowed", 405);
@@ -375,6 +512,7 @@ echo "  Verify: ls $DEST/SKILL.md"
         rooms.delete(room);
         try { await unlink(roomFile(room)); } catch {}
         broadcast(room, { t: "replace", state: {}, by: "delete" });
+        bumpAndNotify(room);
         return jsonResp({ ok: true, key, room });
       }
 
@@ -432,6 +570,7 @@ echo "  Verify: ls $DEST/SKILL.md"
         state[msg.key] = msg.v;
         scheduleSave(peer.room);
         broadcast(peer.room, { t: "set", key: msg.key, v: msg.v, by: peer.id }, ws);
+        bumpAndNotify(peer.room);
         return;
       }
 
@@ -440,6 +579,7 @@ echo "  Verify: ls $DEST/SKILL.md"
         delete state[msg.key];
         scheduleSave(peer.room);
         broadcast(peer.room, { t: "del", key: msg.key, by: peer.id }, ws);
+        bumpAndNotify(peer.room);
         return;
       }
 

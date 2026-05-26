@@ -49,11 +49,12 @@ start_server() {
   mkdir -p "$SERVER_STATE_TMP"
   SERVER_LOG="$(mktemp -t livehtml-test-log-XXXXXX)"
 
-  # We point STATE_DIR at a tmp dir by symlinking ROOT/state -> tmp.
-  # But server.ts hardcodes STATE_DIR = ROOT/state. To isolate, run in a clean
-  # subdir that symlinks back to the real source files but has its own state/.
+  # server.ts hardcodes STATE_DIR = import.meta.dir + "/state", which resolves
+  # symlinks back to the source dir. So we *copy* server.ts into the rundir
+  # (cheap, ~17KB) and symlink the read-only siblings. import.meta.dir then
+  # resolves to the rundir, and state/ is isolated per test.
   SERVER_RUNDIR="$(mktemp -d -t livehtml-test-run-XXXXXX)"
-  ln -s "$REPO_ROOT/server.ts" "$SERVER_RUNDIR/server.ts"
+  cp "$REPO_ROOT/server.ts" "$SERVER_RUNDIR/server.ts"
   ln -s "$REPO_ROOT/public" "$SERVER_RUNDIR/public"
   ln -s "$REPO_ROOT/examples" "$SERVER_RUNDIR/examples"
   ln -s "$REPO_ROOT/skill" "$SERVER_RUNDIR/skill"
@@ -62,7 +63,9 @@ start_server() {
   ln -s "$REPO_ROOT/tsconfig.json" "$SERVER_RUNDIR/tsconfig.json"
   mkdir -p "$SERVER_RUNDIR/state"
 
-  (cd "$SERVER_RUNDIR" && PORT="$SERVER_PORT" bun server.ts >"$SERVER_LOG" 2>&1) &
+  # `exec` replaces the subshell with bun, so $! is the bun PID and a single
+  # kill takes the server down (instead of leaking an orphan bun process).
+  (cd "$SERVER_RUNDIR" && PORT="$SERVER_PORT" exec bun server.ts) >"$SERVER_LOG" 2>&1 &
   SERVER_PID=$!
   trap stop_server EXIT INT TERM
   if ! wait_for_port "$SERVER_PORT" 5; then
@@ -80,6 +83,33 @@ stop_server() {
   [ -n "${SERVER_RUNDIR:-}" ] && rm -rf "$SERVER_RUNDIR" 2>/dev/null || true
   [ -n "${SERVER_STATE_TMP:-}" ] && rm -rf "$(dirname "$SERVER_STATE_TMP")" 2>/dev/null || true
 }
+
+# Kill the current server and start a fresh one in the SAME rundir, so the
+# new instance loads existing state/*.json. Used by V5 (bootId/reset).
+restart_server() {
+  if [ -z "${SERVER_RUNDIR:-}" ]; then
+    echo "restart_server: no SERVER_RUNDIR set (start_server first)" >&2
+    return 1
+  fi
+  if [ -n "${SERVER_PID:-}" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+  fi
+  SERVER_PORT=$(random_port) || return 1
+  SERVER_LOG="$(mktemp -t livehtml-test-log-XXXXXX)"
+  (cd "$SERVER_RUNDIR" && PORT="$SERVER_PORT" exec bun server.ts) >"$SERVER_LOG" 2>&1 &
+  SERVER_PID=$!
+  if ! wait_for_port "$SERVER_PORT" 5; then
+    echo "--- server log (restart) ---"
+    cat "$SERVER_LOG" || true
+    return 1
+  fi
+}
+
+# Disarm the EXIT trap so a test can hand-manage the server (e.g. SIGKILL it
+# mid-test) without the trap firing again at script exit. The test is then
+# responsible for any further cleanup.
+disarm_trap() { trap - EXIT INT TERM; }
 
 # Pretty output.
 pass() { echo "PASS: $*"; }
