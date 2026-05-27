@@ -136,7 +136,7 @@ docs/phase-B-complete.md            (this file)
   enumerated three cookbooks and didn't mention adding a long-poll cookbook
   in B. I deliberately left it alone to avoid scope creep — a Cookbook 4
   for `?wait/since` would be a natural follow-up but I'd rather you decide.
-- Deploy / docker / production at 192.168.130.12:39191 — never touched
+- Deploy / docker / production (private internal deploy) — never touched
 
 ## Open question for you
 

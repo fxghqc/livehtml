@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>livehtml — Agent 读回闭环上线</title>
+<style>
+  :root { color-scheme: light; }
+  body { font: 15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+         max-width: 760px; margin: 40px auto; padding: 0 24px; color: #1f2937; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 36px 0 10px; color: #111827; border-top: 1px solid #e5e7eb; padding-top: 24px; }
+  h2:first-of-type { border-top: 0; padding-top: 0; }
+  h3 { font-size: 15px; margin: 20px 0 6px; color: #111827; }
+  p.lead { color: #4b5563; margin: 6px 0 18px; }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px;
+          background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; vertical-align: middle; }
+  code { background: #f3f4f6; padding: 1px 6px; border-radius: 4px; font-size: 13px; color: #111827; }
+  pre { background: #1e1e2e; color: #cdd6f4; padding: 14px 18px; border-radius: 8px;
+        overflow: auto; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; margin: 8px 0 14px; }
+  .row { display: flex; gap: 20px; align-items: stretch; margin: 12px 0; }
+  .row > div { flex: 1; min-width: 0; }
+  .row > div h4 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; }
+  .row pre { margin: 0; height: 100%; }
+  .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px 18px; background: #fafafa; margin: 10px 0; }
+  .check { margin: 6px 0; display: block; }
+  .check input { margin-right: 8px; vertical-align: middle; }
+  .meta { color: #6b7280; font-size: 12px; margin-top: 4px; }
+  .tag { display: inline-block; font-size: 11px; padding: 1px 6px; background: #e0e7ff; color: #3730a3;
+         border-radius: 4px; margin-right: 6px; vertical-align: middle; }
+  a { color: #2563eb; }
+  details { margin: 12px 0; }
+  details summary { cursor: pointer; color: #374151; font-size: 14px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; margin: 8px 0; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #f3f4f6; }
+  th { color: #6b7280; font-weight: 500; }
+  .ok { color: #047857; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<h1>livehtml — Agent 读回闭环上线 <span class="pill">已发布</span></h1>
+<p class="lead">2026-05-26 · 分支 <code>readback-abc</code> · 3 commits · 11 V 验证脚本全绿</p>
+
+<h2>一句话</h2>
+
+<div class="card">
+  之前 agent 把 HTML 推上去就完事了；
+  <strong>现在它可以读回用户填的内容、阻塞等用户的新动作、看每个字段是什么时候被谁改的。</strong>
+</div>
+
+<h2>三件事</h2>
+
+<h3><span class="tag">Phase A</span>URL 对称：读回路径 = 页面路径</h3>
+
+<div class="row">
+  <div>
+    <h4>之前</h4>
+<pre>curl .../pages/&lt;key&gt;
+# HTML
+
+curl .../state/pages/&lt;key&gt;
+# state — 路径不对称</pre>
+  </div>
+  <div>
+    <h4>现在</h4>
+<pre>curl .../pages/&lt;key&gt;
+# HTML
+
+curl .../pages/&lt;key&gt;/state
+# state — 路径对称（旧路径仍然可用）</pre>
+  </div>
+</div>
+
+<p>Skill 里加了三个 cookbook：<strong>读单页</strong> / <strong>跨页汇总</strong> / <strong>debug 排错</strong>。
+默认 UA 是 <code>livehtml-agent-readback/1</code>，access log 一眼能区分 agent 读回和人浏览。</p>
+
+<h3><span class="tag">Phase B</span>不再轮询，agent 可以挂着等</h3>
+
+<pre>LIVEHTML=http://localhost:39191   # 换成你的部署地址
+curl "$LIVEHTML/pages/&lt;key&gt;/state?wait=30&amp;since=&lt;etag&gt;"
+
+# 用户一改就立刻返回：
+{"status":"changed","etag":"&lt;bootId&gt;:12","version":12,"state":{"task-1":true,...}}
+
+# 超时无变化：
+{"status":"not_modified","etag":"&lt;bootId&gt;:11","version":11}
+
+# 服务器重启过：
+{"status":"reset","etag":"&lt;newBootId&gt;:0","version":0,"state":{...}}
+</pre>
+
+<p>不用 SSE 不用 WebSocket，普通 curl 就能阻塞最多 60 秒。
+<code>since</code> 用 <code>bootId:version</code> 不透明 etag，服务重启自动 reset，agent 知道要重新基准化。</p>
+
+<h3><span class="tag">Phase C</span>可选元数据：谁、什么时候改的</h3>
+
+<div class="row">
+  <div>
+    <h4>默认 GET（不破老 client）</h4>
+<pre>curl .../pages/&lt;key&gt;/state
+{
+  "task-1": true,
+  "note": "ok"
+}</pre>
+  </div>
+  <div>
+    <h4>加 ?meta=1</h4>
+<pre>curl .../pages/&lt;key&gt;/state?meta=1
+{
+  "version": 2,
+  "fields": {
+    "task-1": { "v": true,
+                "ts": "2026-05-26T08:42:31Z",
+                "by": "User-7421" },
+    "note":   { "v": "ok",
+                "ts": "2026-05-26T08:42:35Z",
+                "by": "http" }
+  }
+}</pre>
+  </div>
+</div>
+
+<p>磁盘格式自动升级到 envelope，旧文件（无 <code>version</code> 字段）仍然能读。
+浏览器同步行为零变化，<code>sync.js</code> 一行没动。</p>
+
+<h2>给你的 checklist</h2>
+
+<div class="card">
+  <label class="check"><input type="checkbox" data-live="try-cookbook-1"> 让我的 agent 在生成 HTML 后试一次 <code>curl .../pages/&lt;key&gt;/state</code> 读回</label>
+  <label class="check"><input type="checkbox" data-live="try-longpoll"> 试一次 <code>?wait=10&amp;since=...</code> 阻塞等用户填表</label>
+  <label class="check"><input type="checkbox" data-live="try-meta"> 用 <code>?meta=1</code> 看一次字段的 ts/by</label>
+  <label class="check"><input type="checkbox" data-live="try-restart"> 重启 server 一次，验证 agent 收到 <code>reset</code> 后能恢复</label>
+  <label class="check"><input type="checkbox" data-live="merge-decision"> 决定是否 <code>git merge --ff-only readback-abc</code> 到 main</label>
+  <p class="meta">把这个页面 PUT 到 livehtml 后，团队成员的勾选会实时同步。</p>
+</div>
+
+<h2>测试结果（最后一轮）</h2>
+
+<table>
+  <thead><tr><th>类别</th><th>脚本</th><th>结果</th></tr></thead>
+  <tbody>
+    <tr><td>A</td><td><code>v1_state_alias.sh</code> — 别名字节级等价</td><td class="ok">PASS</td></tr>
+    <tr><td>A</td><td><code>v_demo_smoke.sh</code> — demo 浏览器同步无回归</td><td class="ok">PASS</td></tr>
+    <tr><td>B</td><td><code>v1_longpoll_changed.sh</code> — 写入后 &lt;1s 唤醒</td><td class="ok">PASS</td></tr>
+    <tr><td>B</td><td><code>v2_longpoll_not_modified.sh</code> — 空闲 ~2s 超时</td><td class="ok">PASS</td></tr>
+    <tr><td>B</td><td><code>v3_longpoll_concurrency.sh</code> — 100 并发 long-poll，RSS 稳定</td><td class="ok">PASS</td></tr>
+    <tr><td>B</td><td><code>v4_longpoll_sequence.sh</code> — 编排式 3 PUT，3 changed，version 单调</td><td class="ok">PASS</td></tr>
+    <tr><td>B</td><td><code>v5_longpoll_reset.sh</code> — 重启 → reset + 磁盘状态恢复</td><td class="ok">PASS</td></tr>
+    <tr><td>B</td><td><code>v6_atomic_write_kill.sh</code> — SIGKILL during 50 并发写，全文件 parse</td><td class="ok">PASS</td></tr>
+    <tr><td>C</td><td><code>c1_envelope_format.sh</code> — 磁盘 envelope 形状 + ISO ts + by</td><td class="ok">PASS</td></tr>
+    <tr><td>C</td><td><code>c2_meta_api.sh</code> — ?meta=1 在两条路径都返回 envelope</td><td class="ok">PASS</td></tr>
+    <tr><td>C</td><td><code>c3_backward_read.sh</code> — 老格式向下兼容 + tricky 负载 round-trip</td><td class="ok">PASS</td></tr>
+  </tbody>
+</table>
+
+<h2>留给你拍板的 follow-up</h2>
+
+<div class="card">
+  <label class="check"><input type="checkbox" data-live="followup-cookbook4"> 加 Cookbook 4 教 agent 用 <code>?wait/since</code> long-poll</label>
+  <label class="check"><input type="checkbox" data-live="followup-symmetry"> 给老路径 <code>/state/&lt;room&gt;</code> 也加 <code>?wait/since</code> 对称</label>
+  <label class="check"><input type="checkbox" data-live="followup-skill-meta"> SKILL.md 提一下 <code>?meta=1</code> 的用法</label>
+  <label class="check"><input type="checkbox" data-live="followup-v2-trial"> 跑一次 V2 paired trial 量化 cookbook 是否真改变了 agent 行为</label>
+</div>
+
+<h2>详细文档</h2>
+
+<ul>
+  <li><a href="readback-plan.md">readback-plan.md</a> — 上线前与 codex 两轮讨论收敛的 spec</li>
+  <li><a href="spec-restatement.md">spec-restatement.md</a> — 我开工前的复述（invariants / 灰区 / 测试清单）</li>
+  <li><a href="phase-A-complete.md">phase-A-complete.md</a> · <a href="phase-B-complete.md">phase-B-complete.md</a> · <a href="phase-C-complete.md">phase-C-complete.md</a> — 各阶段实施报告</li>
+  <li><a href="readback-progress.md">readback-progress.md</a> — 全景进度</li>
+</ul>
+
+<details>
+<summary>合并 / 回退 命令</summary>
+<pre>cd /Users/fx/Projects/livehtml
+
+# 看一遍 diff
+git log --oneline main..readback-abc
+git diff main..readback-abc -- server.ts skill/SKILL.md
+
+# 满意 → ff merge
+git checkout main &amp;&amp; git merge --ff-only readback-abc
+
+# 不满意 → 销毁分支（baseline 保留在 main）
+git checkout main &amp;&amp; git branch -D readback-abc</pre>
+</details>
+
+<p class="meta" style="margin-top:40px">页面如果 PUT 到 livehtml（<code>curl -X PUT --data-binary @release-readback-abc.html $LIVEHTML/pages/release/readback-abc</code>，把 <code>$LIVEHTML</code> 换成你的部署地址），上面的所有 checkbox 会实时多人同步。</p>
+
+<script src="/sync.js"></script>
+</body>
+</html>

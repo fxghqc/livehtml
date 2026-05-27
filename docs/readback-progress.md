@@ -113,7 +113,7 @@ Commit: (this commit).
 - Atomic-write internals (`per-room write chain + tmp→rename`,
   `server.ts:50` and the doSave chain) — extended in C to write envelope
   via the same mechanism
-- Deploy / docker / production at `192.168.130.12:39191` — never touched
+- Deploy / docker / production (private internal deploy) — never touched
 - `.gitignore`, `package.json` deps, `Dockerfile`
 
 ## Logs / history

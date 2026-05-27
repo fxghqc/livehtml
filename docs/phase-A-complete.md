@@ -116,7 +116,7 @@ release-gate or post-merge check.
   identical, proven by V1)
 - `/pages/<key>` HTML upload/serve (only added a sibling `/state` route)
 - `.gitignore`, `package.json` deps, `Dockerfile`, deploy config
-- The production server at `192.168.130.12:39191`
+- The production server (private internal deploy)
 
 ## Awaiting user decision
 

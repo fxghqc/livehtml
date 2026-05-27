@@ -9,7 +9,7 @@
 
 - `cwd = /Users/fx/Projects/livehtml/`
 - **非 git 仓库**（无 `.git`，虽有 `.gitignore`）—— 见 `PROPOSAL-no-git-repo.md`
-- 本地默认 `PORT=8787`（`server.ts:7`）；线上是 `192.168.130.12:39191`，**禁止触碰**
+- 本地默认 `PORT=8787`（`server.ts:7`）；线上是私有部署（内网地址在 .env 里），**禁止触碰**
 - MinIO 通过 env 配置，未配则 `/pages*` 返回 503；A 的 `/state` 别名走的是 `/state/...` 路径，不依赖 MinIO；B 的 long-poll 也不依赖 MinIO；C 的 envelope 是 `state/*.json` 磁盘格式，同样不依赖 MinIO
 - 测试都跑 `127.0.0.1:<random-port>`，每个 V 脚本自己 spawn server，互不打架
 - 没有 `tests/` 目录，需新建

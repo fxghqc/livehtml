@@ -5,7 +5,7 @@ description: Use livehtml to publish an agent-generated HTML page that has persi
 
 # livehtml
 
-A deployed service at `http://192.168.130.12:39191` that **hosts HTML files + provides real-time multi-user state**. One URL gets the team a shared interactive page; any element with `data-live="key"` automatically syncs across browsers.
+A deployed service at `LIVEHTML_BASE_URL` that **hosts HTML files + provides real-time multi-user state**. One URL gets the team a shared interactive page; any element with `data-live="key"` automatically syncs across browsers.
 
 ## When this skill saves the day
 
@@ -18,7 +18,7 @@ A deployed service at `http://192.168.130.12:39191` that **hosts HTML files + pr
 ## The two-step workflow
 
 1. **Write HTML** that includes the script tag and `data-live` attributes (template below)
-2. **PUT it** to `/pages/<key>`. The URL `http://192.168.130.12:39191/pages/<key>` is now live and shareable.
+2. **PUT it** to `/pages/<key>`. The URL `LIVEHTML_BASE_URL/pages/<key>` is now live and shareable.
 
 That's it. No build step, no config, no MinIO access needed.
 
@@ -36,7 +36,7 @@ Copy this exactly into the HTML you generate. The `<script>` tag is the entire i
   <input type="checkbox" data-live="task-1"> 任务一
   <textarea data-live="notes"></textarea>
 
-  <script src="http://192.168.130.12:39191/sync.js"></script>
+  <script src="LIVEHTML_BASE_URL/sync.js"></script>
 </body>
 </html>
 ```
@@ -47,13 +47,13 @@ Copy this exactly into the HTML you generate. The `<script>` tag is the entire i
 
 ```bash
 curl -X PUT --data-binary @page.html \
-  http://192.168.130.12:39191/pages/<key>
+  LIVEHTML_BASE_URL/pages/<key>
 ```
 
 - `<key>` can include `/` for hierarchy (e.g. `team-x/2026-05-22/standup`)
 - Use stable, descriptive keys — they show up in the URL the team will see
 - Re-uploading with the same key overwrites the HTML but **keeps the state** (intentional — content can evolve, annotations persist)
-- Share the URL: `http://192.168.130.12:39191/pages/<key>`
+- Share the URL: `LIVEHTML_BASE_URL/pages/<key>`
 
 ## What kinds of elements work
 
@@ -89,7 +89,7 @@ log can distinguish agent read-backs from browser traffic. Keep it.
 
 ```bash
 curl -A "livehtml-agent-readback/1" \
-  http://192.168.130.12:39191/pages/<key>/state
+  LIVEHTML_BASE_URL/pages/<key>/state
 # {"task-1": true, "notes": "...", "status": "doing"}
 ```
 
@@ -101,9 +101,9 @@ pattern: agent PUTs a page → user fills it → agent reads back to continue.
 ```bash
 # List keys, then fetch each page's state
 for key in $(curl -sA "livehtml-agent-readback/1" \
-                  http://192.168.130.12:39191/pages/ | jq -r '.[].key'); do
+                  LIVEHTML_BASE_URL/pages/ | jq -r '.[].key'); do
   state=$(curl -sA "livehtml-agent-readback/1" \
-               "http://192.168.130.12:39191/pages/$key/state")
+               "LIVEHTML_BASE_URL/pages/$key/state")
   echo "$key: $state"
 done
 ```
@@ -118,12 +118,12 @@ Run these in order; the first miss tells you where things broke:
 ```bash
 # Is the page even hosted?
 curl -sI -A "livehtml-agent-readback/1" \
-  http://192.168.130.12:39191/pages/<key> | head -1
+  LIVEHTML_BASE_URL/pages/<key> | head -1
 # 200 = HTML is there. 404 = key typo or PUT never landed.
 
 # What's in state right now?
 curl -sA "livehtml-agent-readback/1" \
-  http://192.168.130.12:39191/pages/<key>/state
+  LIVEHTML_BASE_URL/pages/<key>/state
 # {} = nobody has interacted yet, or DELETE cleared it.
 
 # Are the data-live keys what you expect?
@@ -132,7 +132,7 @@ curl -sA "livehtml-agent-readback/1" \
 
 # Is anyone currently connected?
 curl -sA "livehtml-agent-readback/1" \
-  http://192.168.130.12:39191/rooms | jq '.[] | select(.room=="pages/<key>")'
+  LIVEHTML_BASE_URL/rooms | jq '.[] | select(.room=="pages/<key>")'
 # peers > 0 = someone is viewing right now.
 ```
 
@@ -144,21 +144,21 @@ open DevTools → Network → WS and confirm `set` messages fire when they type
 
 ```bash
 # List everything published
-curl http://192.168.130.12:39191/pages/
+curl LIVEHTML_BASE_URL/pages/
 
 # Delete a page (also clears its state)
-curl -X DELETE http://192.168.130.12:39191/pages/<key>
+curl -X DELETE LIVEHTML_BASE_URL/pages/<key>
 ```
 
 ## Debugging when something seems off
 
 1. **Open the page in a browser**. Look at the top-right floating chip:
    - **Green dot**: WebSocket connected, you're in
-   - **Grey dot**: not connected — check that `http://192.168.130.12:39191` is reachable from that browser
+   - **Grey dot**: not connected — check that `LIVEHTML_BASE_URL` is reachable from that browser
    - Number = how many people currently viewing
-2. **Check the state directly**: `curl http://192.168.130.12:39191/state/pages/<key>` — if your DOM changes don't show up here within a second of changing them, the `data-live` attribute likely isn't set or the key has a typo
+2. **Check the state directly**: `curl LIVEHTML_BASE_URL/state/pages/<key>` — if your DOM changes don't show up here within a second of changing them, the `data-live` attribute likely isn't set or the key has a typo
 3. **Open browser DevTools → Network → WS**: should see one persistent connection to `/ws`, with `set`/`pres` messages flying when things change
-4. **List pages**: `curl http://192.168.130.12:39191/pages/` to confirm your PUT actually landed
+4. **List pages**: `curl LIVEHTML_BASE_URL/pages/` to confirm your PUT actually landed
 
 ## Anti-patterns — don't do these
 
@@ -183,6 +183,6 @@ Or let the user click their name in the chip to change it (saved in their localS
 
 - Full README and architecture: `/Users/fx/Projects/livehtml/README.md`
 - Source code: `/Users/fx/Projects/livehtml/` (server.ts, public/sync.js)
-- Live landing page with endpoint docs: `http://192.168.130.12:39191/`
+- Live landing page with endpoint docs: `LIVEHTML_BASE_URL/`
 
 If your scenario doesn't fit the patterns here, read the README — it covers WebSocket protocol details, presence customization, multi-element same-key tricks, and the full HTTP API.

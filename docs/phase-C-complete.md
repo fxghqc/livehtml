@@ -114,7 +114,7 @@ docs/phase-C-complete.md     (this file)
 - `skill/SKILL.md` — unchanged in C (and in B). Adding a Cookbook 4 for
   long-poll or a note about `?meta=1` is a natural follow-up I left for
   you to decide.
-- Deploy / docker / production at 192.168.130.12:39191 — never touched.
+- Deploy / docker / production (private internal deploy) — never touched.
 - The `/state/<room>` route does NOT have `?wait/since` long-poll added
   (plan only specified the alias gets it; you asked once about symmetry,
   I deferred per plan default).

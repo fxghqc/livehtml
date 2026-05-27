@@ -477,6 +477,9 @@ echo "  Verify: ls $DEST/SKILL.md"
 
     if (path.startsWith("/skill/")) {
       const name = path.slice("/skill/".length);
+      if (name.includes("..")) return errResp("not found", 404);
+      const filePath = join(SKILL_DIR, name);
+      if (!existsSync(filePath)) return errResp("not found", 404);
       const ext = name.split(".").pop()?.toLowerCase();
       const ct =
         ext === "md"
@@ -484,9 +487,13 @@ echo "  Verify: ls $DEST/SKILL.md"
           : ext === "json"
             ? "application/json; charset=utf-8"
             : "text/plain; charset=utf-8";
-      const res = await serveStatic(SKILL_DIR, name, ct);
-      if (res) return res;
-      return errResp("not found", 404);
+      // Substitute LIVEHTML_BASE_URL with the actual base the client hit,
+      // so agents that install via `curl <host>/install | sh` get a SKILL.md
+      // that points at their deployment (not at the upstream repo's IP).
+      const base = `${url.protocol}//${url.host}`;
+      const content = (await readFile(filePath, "utf8"))
+        .replaceAll("LIVEHTML_BASE_URL", base);
+      return new Response(content, { headers: { ...CORS, "Content-Type": ct } });
     }
 
     if (path === "/rooms" && req.method === "GET") {

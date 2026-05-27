@@ -213,10 +213,13 @@ skill 源码在 `skill/` 目录里，跟服务一起版本化。三种装法都�
 ### A. 一行命令（团队最简）
 
 ```bash
-curl -fsSL http://192.168.130.12:39191/install | sh
+# 把 LIVEHTML_BASE_URL 换成你自己部署的地址，例如 http://localhost:39191
+curl -fsSL LIVEHTML_BASE_URL/install | sh
 ```
 
-下载脚本由 livehtml server 实时生成，永远跟当前部署版本一致。完事后重启 Claude Code（或新开会话）即可。
+下载脚本由 livehtml server 实时生成，永远跟当前部署版本一致；server 还会把
+`SKILL.md` 里的 `LIVEHTML_BASE_URL` 占位符就地替换成你访问它时用的实际 URL。
+完事后重启 Claude Code（或新开会话）即可。
 
 ### B. 通过 npx
 
