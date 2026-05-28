@@ -5,7 +5,7 @@
       "id": 1,
       "name": "team-checklist-zh",
       "prompt": "我们小组下周要做一次部署演练，能不能做一个 HTML checklist 让大家在浏览器里勾选每一步是否完成？步骤大概是：1. 备份数据库；2. 停服务；3. 更新代码；4. 跑迁移脚本；5. 重启服务；6. 抽样验证。希望小组每个人打开都能看到最新进度。请把这个 checklist 部署到我们已有的 livehtml 服务（key 用 evals/checklist-test）然后告诉我 URL。",
-      "expected_output": "Agent generates a single HTML file with 6 checkboxes (each with a unique data-live key), includes the <script src=\"LIVEHTML_BASE_URL/sync.js\"></script> tag, uploads it via curl PUT to /pages/evals/checklist-test, and shares the URL LIVEHTML_BASE_URL/pages/evals/checklist-test. No <meta> tag for room id. No attempt to talk to MinIO directly.",
+      "expected_output": "Agent generates a single HTML file with 6 checkboxes (each with a unique data-live key), includes the <script src=\"$LIVEHTML_BASE_URL/sync.js\"></script> tag, uploads it via curl PUT to /pages/evals/checklist-test, and shares the URL $LIVEHTML_BASE_URL/pages/evals/checklist-test. No <meta> tag for room id. No attempt to talk to MinIO directly.",
       "files": []
     },
     {

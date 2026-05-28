@@ -208,37 +208,42 @@ livehtml/
 
 ## 安装配套 skill（Claude Code）
 
-skill 源码在 `skill/` 目录里，跟服务一起版本化。三种装法都把它放进 `~/.claude/skills/livehtml/`：
+skill 源码在 `skill/` 目录里，跟服务一起版本化。SKILL.md 的命令统一用
+`$LIVEHTML_BASE_URL` 变量，部署地址存在配置文件
+`~/.local/state/livehtml/base-url`（遵循 `XDG_STATE_HOME`），脚本运行时加载：
+
+```bash
+export LIVEHTML_BASE_URL=$(cat ~/.local/state/livehtml/base-url)
+```
 
 ### A. 一行命令（团队最简）
 
 ```bash
-# 把 LIVEHTML_BASE_URL 换成你自己部署的地址，例如 http://localhost:39191
-curl -fsSL LIVEHTML_BASE_URL/install | sh
+# 把 <livehtml-url> 换成你的部署地址，例如 http://localhost:39191
+curl -fsSL <livehtml-url>/install | sh
 ```
 
-下载脚本由 livehtml server 实时生成，永远跟当前部署版本一致；server 还会把
-`SKILL.md` 里的 `LIVEHTML_BASE_URL` 占位符就地替换成你访问它时用的实际 URL。
-完事后重启 Claude Code（或新开会话）即可。
+脚本由 livehtml server 实时生成（永远跟当前部署一致），会把 SKILL.md 拉到
+`~/.claude/skills/livehtml/`，并把你访问它用的 URL 写进
+`~/.local/state/livehtml/base-url`。完事后重启 Claude Code 即可。
 
 ### B. 通过 npx
 
 ```bash
-# 从 GitHub 直拉（无需 publish）：
-npx -y github:<your-user>/livehtml livehtml-skill install
-
-# 或 npm 发布后：
-npx livehtml-skill install
+npx -y github:fxghqc/livehtml livehtml-skill install
 ```
 
 ### C. 本地仓库（开发者）
 
 ```bash
-git clone <repo> && cd livehtml
+git clone git@github.com:fxghqc/livehtml.git && cd livehtml
 npm run install-skill              # symlink 模式：源码改 = skill 改
 # 或 copy 模式：
 node scripts/install-skill.cjs install --force
 ```
+
+> B / C 从源码安装**不会**写 `base-url` 配置；装完手动设一次（见上方），
+> 或直接用 A 让 server 帮你写。SKILL.md 顶部也有这个提示。
 
 ### 卸载 / 查看
 

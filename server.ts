@@ -461,14 +461,17 @@ const server = Bun.serve({
     if (path === "/install" && req.method === "GET") {
       const base = `${url.protocol}//${url.host}`;
       const script = `#!/bin/sh
-# livehtml-skill installer — fetches SKILL.md into ~/.claude/skills/livehtml
+# livehtml-skill installer — fetches SKILL.md and saves the base URL
 set -e
 DEST="\${HTML_SYNC_SKILL_DEST:-$HOME/.claude/skills/livehtml}"
-mkdir -p "$DEST"
+STATE_DIR="\${XDG_STATE_HOME:-$HOME/.local/state}/livehtml"
+mkdir -p "$DEST" "$STATE_DIR"
 echo "→ Installing livehtml skill to $DEST"
 curl -fsSL ${base}/skill/SKILL.md -o "$DEST/SKILL.md"
+printf '%s' "${base}" > "$STATE_DIR/base-url"
+echo "✓ Saved base URL to $STATE_DIR/base-url"
 echo "✓ Done. Restart Claude Code (or reload) to pick up the skill."
-echo "  Verify: ls $DEST/SKILL.md"
+echo "  Verify: ls $DEST/SKILL.md && cat $STATE_DIR/base-url"
 `;
       return new Response(script, {
         headers: { ...CORS, "Content-Type": "text/x-shellscript; charset=utf-8" },
@@ -477,9 +480,6 @@ echo "  Verify: ls $DEST/SKILL.md"
 
     if (path.startsWith("/skill/")) {
       const name = path.slice("/skill/".length);
-      if (name.includes("..")) return errResp("not found", 404);
-      const filePath = join(SKILL_DIR, name);
-      if (!existsSync(filePath)) return errResp("not found", 404);
       const ext = name.split(".").pop()?.toLowerCase();
       const ct =
         ext === "md"
@@ -487,13 +487,9 @@ echo "  Verify: ls $DEST/SKILL.md"
           : ext === "json"
             ? "application/json; charset=utf-8"
             : "text/plain; charset=utf-8";
-      // Substitute LIVEHTML_BASE_URL with the actual base the client hit,
-      // so agents that install via `curl <host>/install | sh` get a SKILL.md
-      // that points at their deployment (not at the upstream repo's IP).
-      const base = `${url.protocol}//${url.host}`;
-      const content = (await readFile(filePath, "utf8"))
-        .replaceAll("LIVEHTML_BASE_URL", base);
-      return new Response(content, { headers: { ...CORS, "Content-Type": ct } });
+      const res = await serveStatic(SKILL_DIR, name, ct);
+      if (res) return res;
+      return errResp("not found", 404);
     }
 
     if (path === "/rooms" && req.method === "GET") {

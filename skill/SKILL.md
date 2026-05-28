@@ -5,18 +5,24 @@ description: Use livehtml to publish an agent-generated HTML page that has persi
 
 # livehtml
 
-> **Install sanity check (read first).** The service URL just below should be
-> a real address — `http://host:port` or `https://…`. If it instead shows an
-> all-caps placeholder token containing underscores (i.e. it was never
-> rewritten to a real URL), this skill was installed from source (git clone
-> or `npx`) without URL substitution and **will not work** — every `curl`
-> and `<script src>` here would point at a non-address. Do not proceed; fix
-> it first: reinstall from a running server with
-> `curl <your-livehtml-url>/install | sh` (the server rewrites the URL on the
-> fly), or hand-edit this file to replace the placeholder with your livehtml
-> deployment URL.
+A deployed service that **hosts HTML files + provides real-time multi-user state**. One URL gets the team a shared interactive page; any element with `data-live="key"` automatically syncs across browsers.
 
-A deployed service at `LIVEHTML_BASE_URL` that **hosts HTML files + provides real-time multi-user state**. One URL gets the team a shared interactive page; any element with `data-live="key"` automatically syncs across browsers.
+## Setup — load the base URL
+
+Every command below uses `$LIVEHTML_BASE_URL`. Load it once per shell:
+
+```bash
+export LIVEHTML_BASE_URL=$(cat ~/.local/state/livehtml/base-url)
+```
+
+If that file is missing (installed from source, or never configured), create it with your deployment URL, then re-run the line above:
+
+```bash
+mkdir -p ~/.local/state/livehtml
+echo 'http://your-livehtml-host:port' > ~/.local/state/livehtml/base-url
+```
+
+> If `$LIVEHTML_BASE_URL` is empty, **stop** and do the setup — every `curl` and `<script src>` below depends on it.
 
 ## When this skill saves the day
 
@@ -29,28 +35,32 @@ A deployed service at `LIVEHTML_BASE_URL` that **hosts HTML files + provides rea
 ## The two-step workflow
 
 1. **Write HTML** that includes the script tag and `data-live` attributes (template below)
-2. **PUT it** to `/pages/<key>`. The URL `LIVEHTML_BASE_URL/pages/<key>` is now live and shareable.
+2. **PUT it** to `/pages/<key>`. The URL `$LIVEHTML_BASE_URL/pages/<key>` is now live and shareable.
 
 That's it. No build step, no config, no MinIO access needed.
 
 ## Minimum HTML boilerplate
 
-Copy this exactly into the HTML you generate. The `<script>` tag is the entire integration — no `<meta>` tags, no init code, no manual room id.
+The `<script>` tag is the entire integration — no `<meta>` tags, no init code, no manual room id. Generate the file so `$LIVEHTML_BASE_URL` expands into the script src (a heredoc does this):
 
-```html
+```bash
+cat > page.html <<EOF
 <!doctype html>
 <html lang="zh">
 <head><meta charset="utf-8"><title>your title</title></head>
 <body>
 
-  <!-- your content; mark anything you want synced with data-live="<unique-key>" -->
+  <!-- mark anything you want synced with data-live="<unique-key>" -->
   <input type="checkbox" data-live="task-1"> 任务一
   <textarea data-live="notes"></textarea>
 
-  <script src="LIVEHTML_BASE_URL/sync.js"></script>
+  <script src="$LIVEHTML_BASE_URL/sync.js"></script>
 </body>
 </html>
+EOF
 ```
+
+The served HTML must contain the **literal** resolved URL in `src` — browsers don't expand shell variables.
 
 **Why no meta tag for room id**: when the page is served at `/pages/foo/bar`, sync.js reads `location.pathname` and derives the room id automatically. URL = MinIO key = state room — one identifier for everything.
 
@@ -58,13 +68,13 @@ Copy this exactly into the HTML you generate. The `<script>` tag is the entire i
 
 ```bash
 curl -X PUT --data-binary @page.html \
-  LIVEHTML_BASE_URL/pages/<key>
+  $LIVEHTML_BASE_URL/pages/<key>
 ```
 
 - `<key>` can include `/` for hierarchy (e.g. `team-x/2026-05-22/standup`)
 - Use stable, descriptive keys — they show up in the URL the team will see
 - Re-uploading with the same key overwrites the HTML but **keeps the state** (intentional — content can evolve, annotations persist)
-- Share the URL: `LIVEHTML_BASE_URL/pages/<key>`
+- Share the URL: `$LIVEHTML_BASE_URL/pages/<key>`
 
 ## What kinds of elements work
 
@@ -100,7 +110,7 @@ log can distinguish agent read-backs from browser traffic. Keep it.
 
 ```bash
 curl -A "livehtml-agent-readback/1" \
-  LIVEHTML_BASE_URL/pages/<key>/state
+  $LIVEHTML_BASE_URL/pages/<key>/state
 # {"task-1": true, "notes": "...", "status": "doing"}
 ```
 
@@ -112,9 +122,9 @@ pattern: agent PUTs a page → user fills it → agent reads back to continue.
 ```bash
 # List keys, then fetch each page's state
 for key in $(curl -sA "livehtml-agent-readback/1" \
-                  LIVEHTML_BASE_URL/pages/ | jq -r '.[].key'); do
+                  $LIVEHTML_BASE_URL/pages/ | jq -r '.[].key'); do
   state=$(curl -sA "livehtml-agent-readback/1" \
-               "LIVEHTML_BASE_URL/pages/$key/state")
+               "$LIVEHTML_BASE_URL/pages/$key/state")
   echo "$key: $state"
 done
 ```
@@ -129,12 +139,12 @@ Run these in order; the first miss tells you where things broke:
 ```bash
 # Is the page even hosted?
 curl -sI -A "livehtml-agent-readback/1" \
-  LIVEHTML_BASE_URL/pages/<key> | head -1
+  $LIVEHTML_BASE_URL/pages/<key> | head -1
 # 200 = HTML is there. 404 = key typo or PUT never landed.
 
 # What's in state right now?
 curl -sA "livehtml-agent-readback/1" \
-  LIVEHTML_BASE_URL/pages/<key>/state
+  $LIVEHTML_BASE_URL/pages/<key>/state
 # {} = nobody has interacted yet, or DELETE cleared it.
 
 # Are the data-live keys what you expect?
@@ -143,7 +153,7 @@ curl -sA "livehtml-agent-readback/1" \
 
 # Is anyone currently connected?
 curl -sA "livehtml-agent-readback/1" \
-  LIVEHTML_BASE_URL/rooms | jq '.[] | select(.room=="pages/<key>")'
+  $LIVEHTML_BASE_URL/rooms | jq '.[] | select(.room=="pages/<key>")'
 # peers > 0 = someone is viewing right now.
 ```
 
@@ -155,21 +165,21 @@ open DevTools → Network → WS and confirm `set` messages fire when they type
 
 ```bash
 # List everything published
-curl LIVEHTML_BASE_URL/pages/
+curl $LIVEHTML_BASE_URL/pages/
 
 # Delete a page (also clears its state)
-curl -X DELETE LIVEHTML_BASE_URL/pages/<key>
+curl -X DELETE $LIVEHTML_BASE_URL/pages/<key>
 ```
 
 ## Debugging when something seems off
 
 1. **Open the page in a browser**. Look at the top-right floating chip:
    - **Green dot**: WebSocket connected, you're in
-   - **Grey dot**: not connected — check that `LIVEHTML_BASE_URL` is reachable from that browser
+   - **Grey dot**: not connected — check that `$LIVEHTML_BASE_URL` is reachable from that browser
    - Number = how many people currently viewing
-2. **Check the state directly**: `curl LIVEHTML_BASE_URL/state/pages/<key>` — if your DOM changes don't show up here within a second of changing them, the `data-live` attribute likely isn't set or the key has a typo
+2. **Check the state directly**: `curl $LIVEHTML_BASE_URL/state/pages/<key>` — if your DOM changes don't show up here within a second of changing them, the `data-live` attribute likely isn't set or the key has a typo
 3. **Open browser DevTools → Network → WS**: should see one persistent connection to `/ws`, with `set`/`pres` messages flying when things change
-4. **List pages**: `curl LIVEHTML_BASE_URL/pages/` to confirm your PUT actually landed
+4. **List pages**: `curl $LIVEHTML_BASE_URL/pages/` to confirm your PUT actually landed
 
 ## Anti-patterns — don't do these
 
@@ -192,8 +202,7 @@ Or let the user click their name in the chip to change it (saved in their localS
 
 ## Resources beyond this skill
 
-- Full README and architecture: `/Users/fx/Projects/livehtml/README.md`
-- Source code: `/Users/fx/Projects/livehtml/` (server.ts, public/sync.js)
-- Live landing page with endpoint docs: `LIVEHTML_BASE_URL/`
+- Source code + full README: https://github.com/fxghqc/livehtml
+- Live landing page with endpoint docs: `$LIVEHTML_BASE_URL/`
 
 If your scenario doesn't fit the patterns here, read the README — it covers WebSocket protocol details, presence customization, multi-element same-key tricks, and the full HTTP API.
