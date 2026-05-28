@@ -218,22 +218,47 @@ export LIVEHTML_BASE_URL=$(cat ~/.local/state/livehtml/base-url)
 
 ### A. 一行命令（团队最简）
 
+把 `<livehtml-url>` 换成你的部署地址，例如 `http://localhost:39191`。
+
 ```bash
-# 把 <livehtml-url> 换成你的部署地址，例如 http://localhost:39191
+# macOS / Linux
 curl -fsSL <livehtml-url>/install | sh
 ```
 
-脚本由 livehtml server 实时生成（永远跟当前部署一致），会把 SKILL.md 拉到
-`~/.claude/skills/livehtml/`，并把你访问它用的 URL 写进
-`~/.local/state/livehtml/base-url`。完事后重启 Claude Code 即可。
+```powershell
+# Windows (PowerShell)
+irm <livehtml-url>/install.ps1 | iex
+```
 
-### B. 通过 npx
+脚本由 livehtml server 实时生成（永远跟当前部署一致），会把 SKILL.md 装进
+**所有检测到的 agent** 的全局 skills 目录——Claude Code（`~/.claude/skills/`）、
+Codex（`~/.codex/skills/`）、Cursor（`~/.cursor/skills/`），一个都没装到则默认装
+Claude Code；同时把访问地址写进 `~/.local/state/livehtml/base-url`。完事后重启对应
+agent 即可。
+
+> 路径遵循 `skills` 生态约定，并尊重 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` /
+> `XDG_STATE_HOME` 环境变量。
+
+### B. 通过 `npx skills`（开放 skills 生态）
+
+[`skills`](https://github.com/vercel-labs/skills) 是跨 agent 的 skill 管理 CLI。
+它从 **git 仓库**装，所以源要指向 GitHub 仓库 `fxghqc/livehtml`，**不是**
+`<livehtml-url>`（那只是 server，不是 git 端点）：
+
+```bash
+npx skills add fxghqc/livehtml -g -a claude-code -y
+# -g 全局安装  -a 指定 agent  -y 非交互；默认 symlink，加 --copy 改成独立拷贝
+```
+
+好处是能用 `npx skills list / update / remove` 统一管理。
+
+### C. 通过 npx（仓库自带 installer）
 
 ```bash
 npx -y github:fxghqc/livehtml livehtml-skill install
 ```
 
-### C. 本地仓库（开发者）
+### D. 本地仓库（开发者）
 
 ```bash
 git clone git@github.com:fxghqc/livehtml.git && cd livehtml
@@ -242,8 +267,13 @@ npm run install-skill              # symlink 模式：源码改 = skill 改
 node scripts/install-skill.cjs install --force
 ```
 
-> B / C 从源码安装**不会**写 `base-url` 配置；装完手动设一次（见上方），
-> 或直接用 A 让 server 帮你写。SKILL.md 顶部也有这个提示。
+> B / C / D 都从源码安装，**不会**写 `base-url` 配置；装完手动设一次（见上方），
+> 或直接用 A 让 server 帮你写。SKILL.md 顶部也有这个提示。手动设：
+>
+> ```bash
+> mkdir -p ~/.local/state/livehtml
+> echo '<livehtml-url>' > ~/.local/state/livehtml/base-url
+> ```
 
 ### 卸载 / 查看
 

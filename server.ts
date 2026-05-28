@@ -456,25 +456,102 @@ const server = Bun.serve({
     }
 
     // ---- Skill distribution ----
-    // /install              → one-liner bash script (curl ... | sh)
+    // /install              → POSIX installer  (curl -fsSL <url>/install | sh)
+    // /install.ps1          → Windows installer (irm <url>/install.ps1 | iex)
     // /skill/<file>         → raw skill source files (SKILL.md, evals/evals.json, ...)
+    //
+    // Both installers drop SKILL.md into every detected agent's global skills
+    // dir (Claude Code / Codex / Cursor — paths per the `skills` ecosystem),
+    // falling back to Claude Code if none is detected, and write the base URL
+    // to <XDG_STATE_HOME|~/.local/state>/livehtml/base-url.
     if (path === "/install" && req.method === "GET") {
       const base = `${url.protocol}//${url.host}`;
       const script = `#!/bin/sh
-# livehtml-skill installer — fetches SKILL.md and saves the base URL
+# livehtml-skill installer — installs SKILL.md into your agent(s) + saves the base URL
 set -e
-DEST="\${HTML_SYNC_SKILL_DEST:-$HOME/.claude/skills/livehtml}"
+BASE="${base}"
+SKILL="livehtml"
+
 STATE_DIR="\${XDG_STATE_HOME:-$HOME/.local/state}/livehtml"
-mkdir -p "$DEST" "$STATE_DIR"
-echo "→ Installing livehtml skill to $DEST"
-curl -fsSL ${base}/skill/SKILL.md -o "$DEST/SKILL.md"
-printf '%s' "${base}" > "$STATE_DIR/base-url"
-echo "✓ Saved base URL to $STATE_DIR/base-url"
-echo "✓ Done. Restart Claude Code (or reload) to pick up the skill."
-echo "  Verify: ls $DEST/SKILL.md && cat $STATE_DIR/base-url"
+mkdir -p "$STATE_DIR"
+printf '%s' "$BASE" > "$STATE_DIR/base-url"
+echo "✓ base URL → $STATE_DIR/base-url"
+
+CLAUDE_DIR="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+CODEX_DIR="\${CODEX_HOME:-$HOME/.codex}"
+CURSOR_DIR="$HOME/.cursor"
+
+n=0
+install_to() {
+  # \$1 display name  \$2 agent home  \$3 skills root
+  [ -d "$2" ] || return 0
+  dest="$3/$SKILL"
+  mkdir -p "$dest"
+  curl -fsSL "$BASE/skill/SKILL.md" -o "$dest/SKILL.md"
+  echo "✓ $1 → $dest/SKILL.md"
+  n=$((n + 1))
+}
+
+install_to "Claude Code" "$CLAUDE_DIR" "$CLAUDE_DIR/skills"
+install_to "Codex"       "$CODEX_DIR"  "$CODEX_DIR/skills"
+install_to "Cursor"      "$CURSOR_DIR" "$CURSOR_DIR/skills"
+
+if [ "$n" -eq 0 ]; then
+  dest="$CLAUDE_DIR/skills/$SKILL"
+  mkdir -p "$dest"
+  curl -fsSL "$BASE/skill/SKILL.md" -o "$dest/SKILL.md"
+  echo "✓ no agent detected; installed for Claude Code → $dest/SKILL.md"
+fi
+echo "✓ Done. Restart your agent (Claude Code / Codex / Cursor) to pick up the skill."
 `;
       return new Response(script, {
         headers: { ...CORS, "Content-Type": "text/x-shellscript; charset=utf-8" },
+      });
+    }
+
+    if (path === "/install.ps1" && req.method === "GET") {
+      const base = `${url.protocol}//${url.host}`;
+      const script = `# livehtml-skill installer for Windows — irm ${base}/install.ps1 | iex
+$ErrorActionPreference = 'Stop'
+$Base = '${base}'
+$Skill = 'livehtml'
+
+$StateDir = Join-Path $HOME '.local/state/livehtml'
+New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $StateDir 'base-url'), $Base)
+Write-Host "[ok] base URL -> $StateDir/base-url"
+
+$claude = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }
+$codex  = if ($env:CODEX_HOME)        { $env:CODEX_HOME }        else { Join-Path $HOME '.codex' }
+$cursor = Join-Path $HOME '.cursor'
+
+$targets = @(
+  @{ name = 'Claude Code'; home = $claude; skills = (Join-Path $claude 'skills') }
+  @{ name = 'Codex';       home = $codex;  skills = (Join-Path $codex  'skills') }
+  @{ name = 'Cursor';      home = $cursor; skills = (Join-Path $cursor 'skills') }
+)
+
+$md = (Invoke-WebRequest -Uri "$Base/skill/SKILL.md" -UseBasicParsing).Content
+$n = 0
+foreach ($t in $targets) {
+  if (Test-Path $t.home) {
+    $dest = Join-Path $t.skills $Skill
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $dest 'SKILL.md'), $md)
+    Write-Host "[ok] $($t.name) -> $dest"
+    $n++
+  }
+}
+if ($n -eq 0) {
+  $dest = Join-Path (Join-Path $claude 'skills') $Skill
+  New-Item -ItemType Directory -Force -Path $dest | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $dest 'SKILL.md'), $md)
+  Write-Host "[ok] no agent detected; Claude Code -> $dest"
+}
+Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up the skill."
+`;
+      return new Response(script, {
+        headers: { ...CORS, "Content-Type": "text/plain; charset=utf-8" },
       });
     }
 
