@@ -5,6 +5,17 @@ description: Use livehtml to publish an agent-generated HTML page that has persi
 
 # livehtml
 
+> **Install sanity check (read first).** The service URL just below should be
+> a real address — `http://host:port` or `https://…`. If it instead shows an
+> all-caps placeholder token containing underscores (i.e. it was never
+> rewritten to a real URL), this skill was installed from source (git clone
+> or `npx`) without URL substitution and **will not work** — every `curl`
+> and `<script src>` here would point at a non-address. Do not proceed; fix
+> it first: reinstall from a running server with
+> `curl <your-livehtml-url>/install | sh` (the server rewrites the URL on the
+> fly), or hand-edit this file to replace the placeholder with your livehtml
+> deployment URL.
+
 A deployed service at `LIVEHTML_BASE_URL` that **hosts HTML files + provides real-time multi-user state**. One URL gets the team a shared interactive page; any element with `data-live="key"` automatically syncs across browsers.
 
 ## When this skill saves the day
