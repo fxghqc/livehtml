@@ -161,6 +161,61 @@ If state reads `{}` but the user swears they filled the form, ask them to
 open DevTools → Network → WS and confirm `set` messages fire when they type
 — that proves the browser-side `data-live` wiring is healthy.
 
+### Cookbook 4 — wait for the user to act (long-poll)
+
+When you've just asked the user to tick a box or submit a form and expect them
+to act **soon**, you can block **in this same turn** until they do — instead of
+burning a `sleep N; curl` recheck loop. The server holds the request open until
+state changes or `wait` seconds elapse.
+
+Long-poll uses an opaque cursor, `since=<etag>`. Bootstrap it with one quick
+call (an empty `since` returns the current cursor immediately — it does **not**
+wait), then block on a second call:
+
+```bash
+# 1. grab the current cursor (returns right away)
+etag=$(curl -sA "livehtml-agent-readback/1" \
+  "$LIVEHTML_BASE_URL/pages/<key>/state?wait=1&since=" | jq -r .etag)
+
+# 2. block up to 60s for the next write past that cursor
+curl -sA "livehtml-agent-readback/1" \
+  "$LIVEHTML_BASE_URL/pages/<key>/state?wait=60&since=$etag"
+```
+
+The blocking call returns one of three shapes (look at `.status`):
+
+| `.status` | meaning | what to do next |
+|---|---|---|
+| `changed` | someone wrote since your cursor | use `.state`; your new cursor is `.etag` |
+| `not_modified` | `wait` elapsed, nothing changed | nobody acted in time — tell the user you'll check back, or poll again |
+| `reset` | server restarted (or first call) | adopt `.state` + `.etag`, then poll again |
+
+`wait` is capped at 60s. **Don't park after every PUT** — only long-poll when an
+interaction is genuinely imminent. Otherwise just end your turn and read the
+state back later with Cookbook 1.
+
+If you're a long-running watcher or orchestrator (not a single agent turn),
+loop — carry `.etag` forward each iteration, and jitter reconnects so parallel
+watchers don't all wake in lockstep:
+
+```bash
+since=""   # empty → first reply is `reset`, which carries the live cursor
+while :; do
+  resp=$(curl -sA "livehtml-agent-readback/1" \
+    "$LIVEHTML_BASE_URL/pages/<key>/state?wait=60&since=$since")
+  since=$(jq -r .etag <<<"$resp")
+  [ "$(jq -r .status <<<"$resp")" = changed ] && jq -c .state <<<"$resp"
+  sleep $((RANDOM % 3))   # jitter
+done
+```
+
+> **Field-level metadata (`?meta=1`)** — a plain GET supports `?meta=1`, which
+> returns `{version:2, fields:{<key>:{v, ts, by}}}` — when each key was last
+> written and by which connection. This is for **debugging / storage
+> inspection only**; normal agent workflows should read the flat state
+> (Cookbook 1). `by` is an opaque connection label, **not an authenticated
+> identity** — don't infer who-did-what or provenance from it.
+
 ## Managing pages
 
 ```bash
