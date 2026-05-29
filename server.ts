@@ -658,9 +658,21 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
         return errResp("method not allowed", 405);
       }
 
-      if (!minio) return errResp("minio not configured", 503);
       const key = sanitizePageKey(rest);
       if (!key) return errResp("invalid key", 400);
+
+      // DingTalk human gate on the page HTML GET. Runs before MinIO so an
+      // unauthenticated visitor is redirected to login even if storage is down.
+      if (req.method === "GET" && authCfg.dingtalkEnabled) {
+        const isPub = await isPublicPage(key);
+        const hasSession = !!readSession(req, authCfg.sessionSecret, nowSec());
+        if (!humanAllowed({ gateOn: true, isPublic: isPub, hasSession })) {
+          const loc = `/auth/dingtalk/login?next=${encodeURIComponent(path)}`;
+          return new Response(null, { status: 302, headers: { ...CORS, Location: loc } });
+        }
+      }
+
+      if (!minio) return errResp("minio not configured", 503);
 
       if (req.method === "PUT") {
         const body = await readBodyToBuffer(req);
