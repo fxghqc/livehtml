@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Planning Poker · livehtml</title>
+<style>
+  :root{
+    --bg:#0f1116; --panel:#171a21; --panel2:#1f232c; --line:#2a2f3a;
+    --ink:#e8ebf0; --muted:#9aa3b2; --accent:#6ea8fe; --good:#34d399; --warn:#fbbf24; --bad:#f87171;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:880px;margin:0 auto;padding:28px 20px 80px}
+  h1{font-size:20px;margin:0 0 2px;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:22px}
+  .sub b{color:var(--accent);font-weight:600}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-bottom:18px}
+  label.fld{display:block;font-size:12px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.6px}
+  input[type=text]{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--ink);
+    border-radius:10px;padding:11px 13px;font-size:16px;outline:none}
+  input[type=text]:focus{border-color:var(--accent)}
+  .row{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end}
+  .row>div{flex:1;min-width:180px}
+  .deck{display:flex;gap:10px;flex-wrap:wrap;margin-top:4px}
+  .cardbtn{width:62px;height:84px;border-radius:12px;border:1.5px solid var(--line);background:var(--panel2);
+    color:var(--ink);font-size:24px;font-weight:700;cursor:pointer;transition:.12s;display:flex;align-items:center;justify-content:center}
+  .cardbtn:hover{border-color:var(--accent);transform:translateY(-3px)}
+  .cardbtn.sel{border-color:var(--accent);background:rgba(110,168,254,.16);box-shadow:0 0 0 3px rgba(110,168,254,.25)}
+  .roster{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-top:4px}
+  .seat{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:14px;text-align:center;position:relative;min-height:108px;display:flex;flex-direction:column;justify-content:center;gap:8px}
+  .seat .nm{font-size:13px;color:var(--muted);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .seat .nm.me{color:var(--accent);font-weight:600}
+  .chiprt{font-size:30px;font-weight:800;line-height:1}
+  .pending{color:#4b5563;font-size:26px}
+  .voted .facedown{font-size:30px;color:var(--accent)}
+  .controls{display:flex;gap:12px;margin-top:6px;flex-wrap:wrap}
+  button.act{border:none;border-radius:10px;padding:12px 20px;font-size:15px;font-weight:600;cursor:pointer}
+  .reveal{background:var(--accent);color:#06122b}
+  .reveal:hover{filter:brightness(1.08)}
+  .next{background:var(--panel2);color:var(--ink);border:1px solid var(--line)}
+  .next:hover{border-color:var(--muted)}
+  .stats{display:flex;gap:26px;margin-top:14px;flex-wrap:wrap;align-items:center}
+  .stat .v{font-size:30px;font-weight:800}
+  .stat .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+  .badge{padding:4px 12px;border-radius:999px;font-size:13px;font-weight:600}
+  .consensus{background:rgba(52,211,153,.16);color:var(--good)}
+  .split{background:rgba(251,191,36,.16);color:var(--warn)}
+  .hint{color:var(--muted);font-size:12px;margin-top:10px}
+  .foot{color:#5b6472;font-size:12px;text-align:center;margin-top:34px}
+  .foot code{background:var(--panel2);padding:2px 7px;border-radius:5px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🃏 Planning Poker</h1>
+  <div class="sub">实时估点 · 由 <b>livehtml</b> 驱动：所有人打开同一个链接，投票即时同步，<b>翻牌</b>同时揭晓。</div>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <label class="fld">你的名字</label>
+        <input type="text" id="name" placeholder="输入名字让大家认出你…" autocomplete="off">
+      </div>
+      <div style="flex:2">
+        <label class="fld">本轮估的是</label>
+        <input type="text" data-live="story" placeholder="例：环2 标注台接入 env3 写库…" autocomplete="off">
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <label class="fld">出牌（点一张）</label>
+    <div class="deck" id="deck"></div>
+  </div>
+
+  <div class="card">
+    <label class="fld">桌面 · <span id="onlineN">0</span> 人在线</label>
+    <div class="roster" id="roster"></div>
+    <div class="controls">
+      <button class="act reveal" id="revealBtn">翻牌 👀</button>
+      <button class="act next" id="nextBtn">下一轮 ↻</button>
+    </div>
+    <div class="stats" id="stats" style="display:none"></div>
+    <div class="hint">投票时大家只看到「已出牌」；点「翻牌」才同时揭晓数字。</div>
+  </div>
+
+  <div class="foot">livehtml demo · 房间 <code>pitch/poker</code> · 无需登录，打开即用</div>
+</div>
+
+<script src="/sync.js"></script>
+<script>
+(function(){
+  var DECK = ["1","2","3","5","8","13","21","?","☕"];
+  function myId(){
+    try{
+      var id = localStorage.getItem("livehtml:clientId");
+      if(!id){ id = (crypto.randomUUID&&crypto.randomUUID())||String(Math.random()).slice(2);
+        localStorage.setItem("livehtml:clientId", id); }
+      return id;
+    }catch(e){ return "anon"; }
+  }
+  var ME = myId();
+
+  // ---- name ----
+  var nameEl = document.getElementById("name");
+  try{ nameEl.value = localStorage.getItem("livehtml:user") || ""; }catch(e){}
+  nameEl.addEventListener("input", function(){
+    var n = nameEl.value.trim();
+    if(n && window.LiveHtml) window.LiveHtml.setUser(n);
+  });
+
+  // ---- deck ----
+  var deck = document.getElementById("deck");
+  DECK.forEach(function(v){
+    var b = document.createElement("button");
+    b.className = "cardbtn"; b.textContent = v; b.dataset.v = v;
+    b.addEventListener("click", function(){
+      if(window.LiveHtml) window.LiveHtml.set("vote:"+ME, v);
+    });
+    deck.appendChild(b);
+  });
+
+  document.getElementById("revealBtn").addEventListener("click", function(){
+    if(window.LiveHtml) window.LiveHtml.set("revealed", true);
+  });
+  document.getElementById("nextBtn").addEventListener("click", function(){
+    if(!window.LiveHtml) return;
+    var s = window.LiveHtml.state;
+    Object.keys(s).forEach(function(k){ if(k.indexOf("vote:")===0) window.LiveHtml.del(k); });
+    window.LiveHtml.set("revealed", false);
+  });
+
+  // ---- render loop ----
+  var roster = document.getElementById("roster");
+  var statsEl = document.getElementById("stats");
+  var onlineN = document.getElementById("onlineN");
+
+  function num(v){ var n = Number(v); return (v==="?"||v==="☕"||isNaN(n))?null:n; }
+
+  function render(){
+    if(!window.LiveHtml) return;
+    var state = window.LiveHtml.state;
+    var peers = window.LiveHtml.peers;
+    if(!peers.length) peers = [{id:ME, user:{name:nameEl.value||"你"}}];
+    var revealed = !!state["revealed"];
+    onlineN.textContent = peers.length;
+
+    // highlight my selected card
+    var myVote = state["vote:"+ME];
+    Array.prototype.forEach.call(deck.children, function(b){
+      b.classList.toggle("sel", b.dataset.v === myVote);
+    });
+
+    // roster
+    roster.innerHTML = "";
+    var nums = [];
+    peers.forEach(function(p){
+      var vote = state["vote:"+p.id];
+      var seat = document.createElement("div");
+      seat.className = "seat" + (vote!=null?" voted":"");
+      var nm = document.createElement("div");
+      nm.className = "nm" + (p.id===ME?" me":"");
+      nm.textContent = (p.user&&p.user.name) || p.id.slice(0,6);
+      if(p.id===ME) nm.textContent += " (你)";
+      var rt = document.createElement("div");
+      if(vote==null){ rt.className="chiprt pending"; rt.textContent="·"; }
+      else if(!revealed){ rt.className="facedown"; rt.textContent="🂠"; }
+      else { rt.className="chiprt"; rt.textContent=vote;
+        var n=num(vote); if(n!=null) nums.push(n);
+        rt.style.color = vote==="?"||vote==="☕" ? "var(--muted)" : "var(--ink)"; }
+      seat.appendChild(rt); seat.appendChild(nm);
+      roster.appendChild(seat);
+    });
+
+    // stats
+    if(revealed && nums.length){
+      var sum=0,mn=Infinity,mx=-Infinity;
+      nums.forEach(function(n){ sum+=n; if(n<mn)mn=n; if(n>mx)mx=n; });
+      var avg=(sum/nums.length);
+      var split = mx>mn; // any disagreement
+      statsEl.style.display="flex";
+      statsEl.innerHTML =
+        '<div class="stat"><div class="v">'+avg.toFixed(1)+'</div><div class="k">平均</div></div>'+
+        '<div class="stat"><div class="v">'+mn+'–'+mx+'</div><div class="k">范围</div></div>'+
+        '<div class="stat"><div class="v">'+nums.length+'</div><div class="k">已投</div></div>'+
+        (split?'<span class="badge split">分歧 · 该聊聊</span>':'<span class="badge consensus">共识 ✓</span>');
+    } else {
+      statsEl.style.display="none";
+    }
+  }
+  setInterval(render, 250);
+  render();
+})();
+</script>
+</body>
+</html>

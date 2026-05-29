@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>飞轮环2 · 对话改进标注台</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#fff; --line:#e6e8ec; --ink:#1f2430; --muted:#737b8a;
+    --accent:#2f6df0; --good:#0f9d6e; --warn:#d98a00; --bad:#dc4b4b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:920px;margin:0 auto;padding:26px 20px 90px}
+  h1{font-size:21px;margin:0 0 3px}
+  .sub{color:var(--muted);font-size:13.5px;margin-bottom:6px}
+  .sub b{color:var(--accent)}
+  .redline{font-size:12.5px;color:var(--bad);background:rgba(220,75,75,.07);border:1px solid rgba(220,75,75,.2);
+    border-radius:8px;padding:8px 12px;margin:12px 0 20px}
+  .progress{position:sticky;top:0;z-index:5;background:var(--bg);padding:12px 0 14px;margin-bottom:6px;border-bottom:1px solid var(--line)}
+  .bar{height:8px;background:#e9ebef;border-radius:999px;overflow:hidden}
+  .bar>i{display:block;height:100%;width:0;background:var(--good);transition:width .35s}
+  .pmeta{display:flex;justify-content:space-between;font-size:12.5px;color:var(--muted);margin-bottom:7px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin-bottom:16px;
+    box-shadow:0 1px 2px rgba(16,24,40,.04)}
+  .chead{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+  .cid{font-weight:700;font-size:14px;color:var(--muted)}
+  .sig{font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px}
+  .sig.s1{background:rgba(220,75,75,.12);color:var(--bad)}
+  .sig.s2{background:rgba(217,138,0,.13);color:var(--warn)}
+  .sig.s3{background:rgba(47,109,240,.11);color:var(--accent)}
+  .turns{margin:0 0 14px}
+  .turn{display:flex;gap:9px;margin:7px 0;align-items:flex-start}
+  .who{flex:0 0 64px;font-size:11.5px;color:var(--muted);text-align:right;padding-top:8px;text-transform:uppercase;letter-spacing:.4px}
+  .bub{flex:1;border-radius:11px;padding:9px 13px;font-size:14.5px}
+  .u .bub{background:#eef1f6}
+  .a .bub{background:#fff;border:1px solid var(--line)}
+  .a.flag .bub{border-color:rgba(220,75,75,.35);background:rgba(220,75,75,.03)}
+  .ann{border-top:1px dashed var(--line);padding-top:13px;display:grid;gap:11px}
+  .annrow{display:flex;gap:14px;flex-wrap:wrap}
+  .annrow>div{flex:1;min-width:170px}
+  label.fld{display:block;font-size:11px;color:var(--muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.5px}
+  .chk{display:flex;align-items:center;gap:9px;font-size:14px;font-weight:600;cursor:pointer;user-select:none}
+  .chk input{width:18px;height:18px;accent-color:var(--accent)}
+  textarea,select{width:100%;border:1px solid var(--line);border-radius:9px;padding:9px 11px;font:inherit;font-size:14px;
+    background:#fcfcfd;color:var(--ink);outline:none;resize:vertical}
+  textarea:focus,select:focus{border-color:var(--accent)}
+  textarea{min-height:42px}
+  .foot{color:#97a0af;font-size:12px;text-align:center;margin-top:30px}
+  .foot code{background:#eef1f6;padding:2px 7px;border-radius:5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🛠️ 飞轮 · 环2 对话改进标注台</h1>
+  <div class="sub">魏桥 agent 真实对话（已脱敏样例）· 由 <b>livehtml</b> 驱动：各自认领不同对话，标注实时同步。</div>
+  <div class="redline">红线：这里只采集<strong>人类判断</strong>。Claude 不预判「能否改进」——你来标「可改进 / 本质 / 优先级」，标完 agent 读回结构化结果，聚类出改进类型入 env3 库。</div>
+
+  <div class="progress">
+    <div class="pmeta"><span id="ptext">已标注 0 / 0</span><span id="ponline">· 0 人在线</span></div>
+    <div class="bar"><i id="pbar"></i></div>
+  </div>
+
+  <div id="cards"></div>
+
+  <div class="foot">livehtml demo · 房间 <code>pitch/env2-annotate</code> · 标完读回：<code>curl …/pages/pitch/env2-annotate/state</code></div>
+</div>
+
+<script src="/sync.js"></script>
+<script>
+(function(){
+  // signal: 1=显式负反馈/纠错(红) 2=强隐式负信号(橙) 3=澄清/歧义(蓝)
+  var CONVS = [
+    {id:1, sig:"点踩 · 回避话术", sev:1, turns:[
+      {r:"用户", t:"1号电解槽温度报警，怎么处理？"},
+      {r:"agent", t:"建议您联系设备科或拨打厂内服务热线，他们会安排专人处理。", flag:true}]},
+    {id:2, sig:"用户立刻重述 · 答非所问", sev:2, turns:[
+      {r:"用户", t:"这个月调休还剩几天？"},
+      {r:"agent", t:"调休制度按照公司考勤管理办法执行，具体可在钉钉考勤模块查看。", flag:true},
+      {r:"用户", t:"我就问我自己还剩几天"}]},
+    {id:3, sig:"用户追问澄清 · 答案歧义", sev:3, turns:[
+      {r:"用户", t:"5052 铝卷的物料编码是多少？"},
+      {r:"agent", t:"5052 系列有多个规格，编码以实际厚度和宽度区分。", flag:true},
+      {r:"用户", t:"你说的「以实际区分」是什么意思？到底查哪里"}]},
+    {id:4, sig:"显式纠错 · 信息错误", sev:1, turns:[
+      {r:"用户", t:"高温作业许可证有效期多久？"},
+      {r:"agent", t:"高温作业许可证一般有效期为 30 天。", flag:true},
+      {r:"用户", t:"不对，实际上是当班有效，隔天就得重新办"}]},
+    {id:5, sig:"多轮未收敛 · 没解决", sev:2, turns:[
+      {r:"用户", t:"差旅报销单提交后一直是「待审批」"},
+      {r:"agent", t:"请耐心等待审批人处理。"},
+      {r:"用户", t:"三天了，审批人是谁？"},
+      {r:"agent", t:"审批流程由系统自动分配，建议您留意通知。", flag:true},
+      {r:"用户", t:"那我到底找谁……"}]},
+    {id:6, sig:"自我承认失败 · 我不太确定", sev:2, turns:[
+      {r:"用户", t:"我想申请 MES 系统的报表导出权限"},
+      {r:"agent", t:"这个我不太确定，可能需要走 IT 工单，您可以试试。", flag:true}]},
+    {id:7, sig:"token 异常长 · 过度冗长", sev:3, turns:[
+      {r:"用户", t:"今天食堂几点开饭？"},
+      {r:"agent", t:"关于厂区食堂的就餐时间，我们有着完善的餐饮服务保障体系。早餐通常在清晨时段供应，午餐在中午时段，晚餐在傍晚时段。为了给广大职工提供优质的就餐体验，食堂管理部门会根据生产班次进行动态调整，同时兼顾营养搭配与卫生标准……（建议以现场公示为准）", flag:true}]},
+    {id:8, sig:"自相矛盾", sev:1, turns:[
+      {r:"用户", t:"夜班是几点到几点？"},
+      {r:"agent", t:"夜班通常是 23:00 到次日 7:00，也就是从晚上 11 点工作到早上 8 点。", flag:true}]},
+    {id:9, sig:"<5秒抛弃 · 无价值", sev:2, turns:[
+      {r:"用户", t:"安全帽什么颜色对应什么工种？"},
+      {r:"agent", t:"安全帽颜色规定请参考公司安全管理相关文件。", flag:true}]},
+    {id:10, sig:"用户重述 · 答非所问", sev:2, turns:[
+      {r:"用户", t:"帮我查下 2 号库锌锭还有多少吨"},
+      {r:"agent", t:"库存信息可在 WMS 仓储系统的库存查询页面实时查看。", flag:true},
+      {r:"用户", t:"我要的是数字，2号库锌锭多少吨"}]}
+  ];
+
+  function esc(s){ return s.replace(/[&<>]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;"}[c];}); }
+
+  var host = document.getElementById("cards");
+  CONVS.forEach(function(c){
+    var p = "c"+(c.id<10?"0":"")+c.id;
+    var turns = c.turns.map(function(t){
+      var isA = t.r==="agent";
+      return '<div class="turn '+(isA?"a":"u")+(isA&&t.flag?" flag":"")+'">'+
+        '<div class="who">'+(isA?"AGENT":"用户")+'</div>'+
+        '<div class="bub">'+esc(t.t)+'</div></div>';
+    }).join("");
+    var sevc = "s"+c.sev;
+    var card = document.createElement("div");
+    card.className="card";
+    card.innerHTML =
+      '<div class="chead"><span class="cid">对话 #'+(c.id<10?"0":"")+c.id+'</span>'+
+        '<span class="sig '+sevc+'">'+esc(c.sig)+'</span></div>'+
+      '<div class="turns">'+turns+'</div>'+
+      '<div class="ann">'+
+        '<label class="chk"><input type="checkbox" data-live="'+p+'-improvable"> 可改进 → 进候选队列</label>'+
+        '<div><label class="fld">改进本质（一句话，自由文本）</label>'+
+          '<textarea data-live="'+p+'-essence" placeholder="例：应直接给数字/步骤，而不是把用户推回系统…"></textarea></div>'+
+        '<div class="annrow">'+
+          '<div><label class="fld">优先级</label><select data-live="'+p+'-priority">'+
+            '<option value="">—</option><option value="高">高</option><option value="中">中</option><option value="低">低</option>'+
+          '</select></div>'+
+          '<div style="flex:2"><label class="fld">更好的回答（可选草稿）</label>'+
+            '<textarea data-live="'+p+'-better" placeholder="可留空，标注阶段先抓本质…"></textarea></div>'+
+        '</div>'+
+      '</div>';
+    host.appendChild(card);
+  });
+
+  // ---- live progress ----
+  var N = CONVS.length;
+  var ptext=document.getElementById("ptext"), pbar=document.getElementById("pbar"), ponline=document.getElementById("ponline");
+  function render(){
+    if(!window.LiveHtml) return;
+    var s = window.LiveHtml.state, done=0;
+    CONVS.forEach(function(c){
+      var p="c"+(c.id<10?"0":"")+c.id;
+      var ess=s[p+"-essence"], imp=s[p+"-improvable"];
+      if((ess&&String(ess).trim())||imp===true) done++;
+    });
+    ptext.textContent="已标注 "+done+" / "+N;
+    pbar.style.width=(N?Math.round(done/N*100):0)+"%";
+    var peers=window.LiveHtml.peers.length;
+    ponline.textContent="· "+(peers||1)+" 人在线";
+  }
+  setInterval(render,400); render();
+})();
+</script>
+</body>
+</html>
