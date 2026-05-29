@@ -1,6 +1,7 @@
 // tests/unit/gate.test.ts
 import { test, expect } from "bun:test";
 import { sanitizeNext, apiTokenOk, humanAllowed, parsePublicMeta } from "../../auth/gate.ts";
+import { roomPublicKey } from "../../auth/gate.ts";
 
 test("sanitizeNext keeps safe relative paths", () => {
   expect(sanitizeNext("/pages/abc")).toBe("/pages/abc");
@@ -40,4 +41,11 @@ test("parsePublicMeta reads public flag", () => {
   expect(parsePublicMeta({ public: "0" })).toBe(false);
   expect(parsePublicMeta(undefined)).toBe(false);
   expect(parsePublicMeta({})).toBe(false);
+});
+
+test("roomPublicKey extracts page key from pages/ rooms only", () => {
+  expect(roomPublicKey("pages/abc")).toBe("abc");
+  expect(roomPublicKey("pages/team/q3")).toBe("team/q3");
+  expect(roomPublicKey("default")).toBeNull();
+  expect(roomPublicKey("examples/demo.html")).toBeNull();
 });

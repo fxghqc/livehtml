@@ -29,3 +29,11 @@ export function parsePublicMeta(metaData: Record<string, string> | undefined): b
   if (!metaData) return false;
   return metaData.public === "1" || metaData["x-amz-meta-public"] === "1";
 }
+
+// Maps a room id to the page key whose public-flag governs it, or null if the
+// room is not page-backed (those are deny-by-default when the gate is on).
+export function roomPublicKey(room: string): string | null {
+  if (room === "pages" || room === "pages/") return null;
+  if (room.startsWith("pages/")) return room.slice("pages/".length);
+  return null;
+}

@@ -7,7 +7,7 @@ import { loadAuthConfig } from "./auth/config.ts";
 import { createDingTalkClient } from "./auth/dingtalk.ts";
 import { handleAuthRoute } from "./auth/routes.ts";
 import { readSession, parseCookies } from "./auth/session.ts";
-import { apiTokenOk, humanAllowed, parsePublicMeta, sanitizeNext } from "./auth/gate.ts";
+import { apiTokenOk, humanAllowed, parsePublicMeta, sanitizeNext, roomPublicKey } from "./auth/gate.ts";
 
 const PORT = Number(process.env.PORT || 8787);
 const ROOT = import.meta.dir;
@@ -82,7 +82,7 @@ function apiGateFail(req: Request): Response | null {
 }
 
 type RoomState = Record<string, unknown>;
-type Peer = { id: string; room: string; user: unknown };
+type Peer = { id: string; room: string; user: unknown; auth: { uid: string; name: string } | null };
 type WsData = { peer: Peer };
 
 const rooms = new Map<string, RoomState>();
@@ -452,8 +452,16 @@ const server = Bun.serve({
     const path = url.pathname;
 
     if (path === "/ws") {
+      const sess = authCfg.dingtalkEnabled ? readSession(req, authCfg.sessionSecret, nowSec()) : null;
       const ok = srv.upgrade(req, {
-        data: { peer: { id: crypto.randomUUID(), room: "", user: null } } satisfies WsData,
+        data: {
+          peer: {
+            id: crypto.randomUUID(),
+            room: "",
+            user: null,
+            auth: sess ? { uid: sess.uid, name: sess.name } : null,
+          },
+        } satisfies WsData,
       });
       return ok ? undefined : new Response("upgrade failed", { status: 400 });
     }
@@ -744,24 +752,35 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
 
       if (msg.t === "hi") {
         const room = sanitizeRoom(msg.room || "default");
+
+        // DingTalk gate: when on, a browser needs a session unless the room is
+        // backed by a public page. Non-page rooms are deny-by-default.
+        if (authCfg.dingtalkEnabled && !peer.auth) {
+          const key = roomPublicKey(room);
+          const isPub = key ? await isPublicPage(key) : false;
+          if (!humanAllowed({ gateOn: true, isPublic: isPub, hasSession: false })) {
+            ws.send(JSON.stringify({ t: "denied", reason: "login_required" }));
+            ws.close();
+            return;
+          }
+        }
+
         peer.room = room;
-        peer.user = msg.user ?? null;
-        if (typeof msg.clientId === "string" && msg.clientId.length <= 64) {
-          peer.id = msg.clientId;
+        // Trusted identity overrides any client-supplied user/clientId.
+        if (peer.auth) {
+          peer.user = { name: peer.auth.name, userId: peer.auth.uid };
+          peer.id = peer.auth.uid;
+        } else {
+          peer.user = msg.user ?? null;
+          if (typeof msg.clientId === "string" && msg.clientId.length <= 64) {
+            peer.id = msg.clientId;
+          }
         }
         const set = peersByRoom.get(room) ?? new Set<ServerWebSocket<WsData>>();
         set.add(ws);
         peersByRoom.set(room, set);
         const state = await loadRoom(room);
-        ws.send(
-          JSON.stringify({
-            t: "init",
-            room,
-            state,
-            peers: presenceList(room),
-            you: peer.id,
-          }),
-        );
+        ws.send(JSON.stringify({ t: "init", room, state, peers: presenceList(room), you: peer.id }));
         broadcast(room, { t: "pres", peers: presenceList(room) }, ws);
         return;
       }
