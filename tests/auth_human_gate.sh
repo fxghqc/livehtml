@@ -10,6 +10,7 @@ source "$(dirname "$0")/_lib.sh"
 export DINGTALK_CLIENT_ID="testkey"
 export DINGTALK_CLIENT_SECRET="testsecret"
 export SESSION_SECRET="unit-secret"
+export LIVEHTML_API_TOKEN="test-api-token"  # required when the DingTalk gate is on
 start_server
 BASE="http://127.0.0.1:$SERVER_PORT"
 

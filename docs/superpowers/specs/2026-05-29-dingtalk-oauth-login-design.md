@@ -66,11 +66,11 @@ Same-origin is what makes this clean: the page and its `sync.js` WebSocket both 
 | `LIVEHTML_PUBLIC_BASE_URL` | Stable external origin (e.g. `http://192.168.130.12:39191`) used to build the **exact-match** `redirect_uri`. Falls back to the request origin if unset. | recommended |
 | `SESSION_SECRET` | HMAC-SHA256 key for signing the session cookie. Server refuses to enable the DingTalk gate without it (fail-closed). | enabling login |
 | `SESSION_TTL_SEC` | Session lifetime. Default `604800` (7 days). | optional |
-| `LIVEHTML_API_TOKEN` | Static bearer for agent/HTTP surfaces. Presence = API-token gate ON. | protecting agent API |
+| `LIVEHTML_API_TOKEN` | Static bearer for agent/HTTP surfaces. Presence = API-token gate ON. **Required when the DingTalk gate is on** (fail-closed coupling — see §14). | protecting agent API; enabling login |
 
 Secrets live only in `.env` (already gitignored) — never in `server.ts`, this spec, or any committed file.
 
-**Backward compatibility:** with none of `DINGTALK_CLIENT_ID` / `LIVEHTML_API_TOKEN` set, the server behaves exactly as today (fully open). Each gate is independently toggled.
+**Backward compatibility:** with none of `DINGTALK_CLIENT_ID` / `LIVEHTML_API_TOKEN` set, the server behaves exactly as today (fully open). The coupling is **one-directional**: the API-token gate may run alone (token without DingTalk), but enabling the DingTalk gate **requires** an API token (fail-closed — see §14), because the login gate only covers human surfaces and would otherwise leave the agent/data surfaces open.
 
 ## 6. Auth surfaces (routing matrix)
 
@@ -95,14 +95,14 @@ Notes:
 
 ### `GET /auth/dingtalk/login?next=<relative-path>`
 - Sanitize `next` to a same-origin relative path (default `/`); reject absolute/`//` URLs (open-redirect guard).
-- Generate random `state`; set short-lived cookie `lh_oauth_state=<state>` (`HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600`) carrying both `state` and `next` (signed).
+- Generate random `state`; set short-lived cookie `lh_oauth=<state>` (`HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600`) carrying both `state` and `next` (signed).
 - 302 to:
   `https://login.dingtalk.com/oauth2/auth?redirect_uri=<enc>&response_type=code&client_id=<AppKey>&scope=openid%20corpid&state=<state>&prompt=consent`
   where `<enc>` = URL-encoded `${PUBLIC_BASE_URL}/auth/dingtalk/callback`.
 
 ### `GET /auth/dingtalk/callback?authCode=&state=`
 - Accept `authCode` (modern) or `code` (defensive fallback).
-- Verify `state` matches the `lh_oauth_state` cookie; clear it. Mismatch → 400.
+- Verify `state` matches the `lh_oauth` cookie; clear it. Mismatch → 400.
 - **Call 2 — token exchange:** `POST https://api.dingtalk.com/v1.0/oauth2/userAccessToken`, JSON `{clientId, clientSecret, code: authCode, grantType:"authorization_code", refreshToken:""}` → `{accessToken, corpId, ...}`.
 - (Optional) if `DINGTALK_CORP_ID` set and response `corpId` present and mismatched → reject (soft check).
 - **Call 3 — profile:** `GET https://api.dingtalk.com/v1.0/contact/users/me`, header `x-acs-dingtalk-access-token: <USER token>` → `{unionId, nick, ...}`.
@@ -175,7 +175,7 @@ Gate sequence (in the callback):
 - All DingTalk outbound calls: timeout (e.g. 8s), catch network errors → render a friendly retry page (login surface) or `502` (API surface). Never leak secrets or raw upstream bodies to the client; log server-side.
 - APP-token fetch failure during a callback → `502` "暂时无法验证身份，请重试".
 - Open-redirect guard on `next`. CSRF guard via `state`. Constant-time HMAC compare for the session.
-- Fail-closed: if `DINGTALK_CLIENT_ID` is set but `SESSION_SECRET` is missing, the server logs an error and **does not start the gate half-configured** (decision: refuse to serve protected pages rather than serve them ungated).
+- Fail-closed: if `DINGTALK_CLIENT_ID` is set but `SESSION_SECRET` **or `LIVEHTML_API_TOKEN`** is missing, the server throws at startup and **does not start the gate half-configured** (decision: refuse to serve rather than leave a surface ungated). `LIVEHTML_API_TOKEN` is required here because the DingTalk gate only covers the human surfaces (page HTML + `/ws`); without the token gate, the agent/data surfaces (state API, `/pages/` list, `/rooms`, long-poll) would leave every protected page's live data readable/writable/enumerable by anyone (incl. cross-origin via `*` CORS).
 
 ## 15. Deployment action items (operator)
 

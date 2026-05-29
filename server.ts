@@ -693,18 +693,24 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
         }
       }
 
+      // Mutating methods are agent surfaces: token-gate them BEFORE the MinIO
+      // availability check so a bad/missing token returns 401, not 503.
+      if (req.method === "PUT" || req.method === "DELETE") {
+        const g = apiGateFail(req); if (g) return g;
+      }
+
       if (!minio) return errResp("minio not configured", 503);
 
       if (req.method === "PUT") {
-        const g = apiGateFail(req); if (g) return g;
         const body = await readBodyToBuffer(req);
         if (!body) return errResp(`body must be non-empty and ≤ ${MAX_HTML_SIZE} bytes`, 400);
         const isPub = /^(1|true|yes)$/i.test(req.headers.get("x-public") || "");
-        await minio.putObject(MINIO_BUCKET, key, body, body.length, {
+        const meta: Record<string, string> = {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-cache",
-          public: isPub ? "1" : "0",
-        });
+        };
+        if (isPub) meta.public = "1"; // private pages omit the key (spec §10)
+        await minio.putObject(MINIO_BUCKET, key, body, body.length, meta);
         publicCache.set(key, isPub);
         return jsonResp({ ok: true, key, url: `/pages/${key}`, room: roomForPageKey(key), public: isPub });
       }
@@ -727,7 +733,6 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
       }
 
       if (req.method === "DELETE") {
-        const g = apiGateFail(req); if (g) return g;
         try {
           await minio.removeObject(MINIO_BUCKET, key);
         } catch (e: any) {
@@ -828,7 +833,13 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
       }
 
       if (msg.t === "pres") {
-        peer.user = msg.v ?? null;
+        // Trusted identity is server-owned: an authenticated peer cannot rename
+        // itself via pres (mirror the `hi` branch). Anonymous peers may self-label.
+        if (peer.auth) {
+          peer.user = { name: peer.auth.name, userId: peer.auth.uid };
+        } else {
+          peer.user = msg.v ?? null;
+        }
         broadcast(peer.room, { t: "pres", peers: presenceList(peer.room) });
         return;
       }

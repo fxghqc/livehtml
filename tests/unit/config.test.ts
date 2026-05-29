@@ -13,6 +13,13 @@ test("dingtalk enabled requires session secret (fail closed)", () => {
     .toThrow(/SESSION_SECRET/);
 });
 
+test("dingtalk enabled requires api token (fail closed)", () => {
+  // The login gate covers human surfaces only; without an API token the
+  // agent/state surfaces would be left open. Refuse to start.
+  expect(() => loadAuthConfig({ DINGTALK_CLIENT_ID: "k", DINGTALK_CLIENT_SECRET: "s", SESSION_SECRET: "secret" }))
+    .toThrow(/LIVEHTML_API_TOKEN/);
+});
+
 test("parses full config", () => {
   const c = loadAuthConfig({
     DINGTALK_CLIENT_ID: "k", DINGTALK_CLIENT_SECRET: "s", DINGTALK_CORP_ID: "corp",
@@ -27,7 +34,9 @@ test("parses full config", () => {
   expect(c.apiToken).toBe("tok");
 });
 
-test("api token gate is independent of dingtalk", () => {
+test("api token gate can run alone (without dingtalk)", () => {
+  // Token-only is allowed; the coupling is one-directional (dingtalk requires a
+  // token, but a token does not require dingtalk).
   const c = loadAuthConfig({ LIVEHTML_API_TOKEN: "tok" });
   expect(c.dingtalkEnabled).toBe(false);
   expect(c.apiTokenEnabled).toBe(true);

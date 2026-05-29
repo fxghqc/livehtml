@@ -139,7 +139,7 @@
   // ---- State + WebSocket ----
 
   const room = defaultRoom();
-  const myId = loadClientId();
+  let myId = loadClientId();
   let user = loadUser();
 
   const bindings = new Map(); // key -> Set<HTMLElement>
@@ -248,6 +248,9 @@
       }
       switch (msg.t) {
         case "init":
+          // The server may key us by a trusted id (e.g. authenticated uid);
+          // adopt it so our own presence row + self-checks match.
+          if (msg.you) myId = msg.you;
           applyFullState(msg.state || {});
           peers = msg.peers || [];
           updateChip();

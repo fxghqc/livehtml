@@ -166,10 +166,14 @@ DINGTALK_CORP_ID=          # 可选，再做一层企业 corpId 软校验
 LIVEHTML_PUBLIC_BASE_URL=http://192.168.130.12:39191
 SESSION_SECRET=           # 开了登录门**必填**，用长随机串
 SESSION_TTL_SEC=604800    # 会话有效期，默认 7 天
+LIVEHTML_API_TOKEN=       # 开了登录门**必填**（见下）：保护 agent/数据接口
 ```
 
-> **fail-closed**：设了 `DINGTALK_CLIENT_ID` 却没设 `SESSION_SECRET`，server 直接拒绝启动，
-> 不会半配置地裸奔。
+> **fail-closed**：设了 `DINGTALK_CLIENT_ID` 却没设 `SESSION_SECRET` **或** `LIVEHTML_API_TOKEN`，
+> server 直接拒绝启动，不会半配置地裸奔。为什么也要 `LIVEHTML_API_TOKEN`？登录门只挡人类面
+> （页面 HTML + `/ws`）；状态 API（`/state/*`、`/pages/<key>/state`、长轮询）、`/pages/` 列表、
+> `/rooms` 这些数据/枚举接口是 token 挡的。只开登录门不开 token，受保护页面的**实时数据仍可被任何人
+> 读写/枚举**（`*` CORS 还允许跨域），所以二者必须一起开。
 
 部署侧需要操作（见 spec §15）：
 
@@ -185,7 +189,8 @@ SESSION_TTL_SEC=604800    # 会话有效期，默认 7 天
 
 挡在 agent 用的读回接口前面：状态 HTTP API（`/state/*`）与页面上传（`PUT /pages/<key>`）。
 设置 `LIVEHTML_API_TOKEN` 即开启，之后这些调用都要带 `Authorization: Bearer <token>`，
-否则返回 `401`。它跟钉钉登录门**完全独立**，可以单独开。
+否则返回 `401`。耦合是**单向**的：token 门可以单独开（不需要钉钉）；但反过来，开了钉钉登录门
+就**必须**同时设 token（见上方 fail-closed），否则数据接口会裸奔。
 
 ```bash
 # ---- agent 接口 API token 门（留空即关闭）----
