@@ -617,6 +617,7 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
     }
 
     if (path === "/rooms" && req.method === "GET") {
+      const g = apiGateFail(req); if (g) return g;
       const allRooms = new Set([...rooms.keys(), ...peersByRoom.keys()]);
       const out = Array.from(allRooms).map((room) => ({
         room,
@@ -629,6 +630,7 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
     // ---- /pages: HTML hosting backed by MinIO ----
 
     if (path === "/pages" || path === "/pages/") {
+      const g = apiGateFail(req); if (g) return g;
       if (!minio) return errResp("minio not configured", 503);
       if (req.method !== "GET") return errResp("method not allowed", 405);
       const items: { key: string; size: number; lastModified: string; url: string }[] = [];
@@ -651,6 +653,7 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
       // /pages/<key>/state — alias for /state/pages/<key>, no MinIO needed.
       // GET with ?wait=<sec> opts into long-poll envelope; otherwise plain.
       if (rest.endsWith("/state")) {
+        const g = apiGateFail(req); if (g) return g;
         const rawKey = rest.slice(0, -"/state".length);
         const key = sanitizePageKey(rawKey);
         if (!key) return errResp("invalid key", 400);
@@ -683,6 +686,7 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
       if (!minio) return errResp("minio not configured", 503);
 
       if (req.method === "PUT") {
+        const g = apiGateFail(req); if (g) return g;
         const body = await readBodyToBuffer(req);
         if (!body) return errResp(`body must be non-empty and ≤ ${MAX_HTML_SIZE} bytes`, 400);
         await minio.putObject(MINIO_BUCKET, key, body, body.length, {
@@ -710,6 +714,7 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
       }
 
       if (req.method === "DELETE") {
+        const g = apiGateFail(req); if (g) return g;
         try {
           await minio.removeObject(MINIO_BUCKET, key);
         } catch (e: any) {
@@ -731,6 +736,7 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
     }
 
     if (path.startsWith("/state/")) {
+      const g = apiGateFail(req); if (g) return g;
       const raw = decodeURIComponent(path.slice("/state/".length));
       const room = sanitizeRoom(raw);
       const resp = await handleStateRoom(req, room);
