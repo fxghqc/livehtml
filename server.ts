@@ -3,6 +3,11 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { Client as MinioClient } from "minio";
+import { loadAuthConfig } from "./auth/config.ts";
+import { createDingTalkClient } from "./auth/dingtalk.ts";
+import { handleAuthRoute } from "./auth/routes.ts";
+import { readSession, parseCookies } from "./auth/session.ts";
+import { apiTokenOk, humanAllowed, parsePublicMeta, sanitizeNext } from "./auth/gate.ts";
 
 const PORT = Number(process.env.PORT || 8787);
 const ROOT = import.meta.dir;
@@ -45,6 +50,35 @@ if (MINIO_ENDPOINT) {
     console.error(`[minio] init failed:`, e);
     minio = null;
   }
+}
+
+// ---- Auth (optional; both gates off => unchanged behavior) ----
+const authCfg = loadAuthConfig(process.env as Record<string, string | undefined>);
+const ding = authCfg.dingtalkEnabled
+  ? createDingTalkClient({ clientId: authCfg.clientId, clientSecret: authCfg.clientSecret, corpId: authCfg.corpId })
+  : null;
+const nowSec = () => Math.floor(Date.now() / 1000);
+if (authCfg.dingtalkEnabled) console.log(`[auth] DingTalk login gate ENABLED`);
+if (authCfg.apiTokenEnabled) console.log(`[auth] API token gate ENABLED`);
+
+// Per-page public flag cache (source of truth = MinIO object metadata).
+const publicCache = new Map<string, boolean>();
+async function isPublicPage(key: string): Promise<boolean> {
+  if (!minio) return false;
+  if (publicCache.has(key)) return publicCache.get(key)!;
+  try {
+    const st: any = await minio.statObject(MINIO_BUCKET, key);
+    const pub = parsePublicMeta(st?.metaData);
+    publicCache.set(key, pub);
+    return pub;
+  } catch {
+    return false;
+  }
+}
+function apiGateFail(req: Request): Response | null {
+  if (!authCfg.apiTokenEnabled) return null;
+  if (apiTokenOk(req, authCfg.apiToken)) return null;
+  return new Response("unauthorized", { status: 401, headers: { ...CORS, "WWW-Authenticate": "Bearer" } });
 }
 
 type RoomState = Record<string, unknown>;
@@ -425,6 +459,11 @@ const server = Bun.serve({
     }
 
     if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
+
+    if (path.startsWith("/auth/")) {
+      const r = await handleAuthRoute(req, url, authCfg, ding, nowSec());
+      if (r) return r;
+    }
 
     if (path === "/" || path === "/index.html") {
       return (

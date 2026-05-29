@@ -15,6 +15,7 @@
   "scripts": {
     "start": "bun server.ts",
     "dev": "bun --hot server.ts",
+    "test:unit": "bun test tests/unit",
     "install-skill": "node scripts/install-skill.cjs install --link"
   },
   "devDependencies": {

@@ -58,6 +58,7 @@ start_server() {
   ln -s "$REPO_ROOT/public" "$SERVER_RUNDIR/public"
   ln -s "$REPO_ROOT/examples" "$SERVER_RUNDIR/examples"
   ln -s "$REPO_ROOT/skill" "$SERVER_RUNDIR/skill"
+  ln -s "$REPO_ROOT/auth" "$SERVER_RUNDIR/auth"
   ln -s "$REPO_ROOT/node_modules" "$SERVER_RUNDIR/node_modules"
   ln -s "$REPO_ROOT/package.json" "$SERVER_RUNDIR/package.json"
   ln -s "$REPO_ROOT/tsconfig.json" "$SERVER_RUNDIR/tsconfig.json"
@@ -167,4 +168,17 @@ http() {
   fi
   HTTP_CODE=$(printf '%s' "$BODY" | tail -n1)
   BODY=$(printf '%s' "$BODY" | sed '$d')
+}
+
+# b64url <stdin> — base64url encode without padding.
+b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+
+# mint_session <uid> <name> <secret> — echo a valid lh_sess cookie value.
+# Mirrors auth/session.ts: token = b64url(JSON) + "." + b64url(HMAC_SHA256(b64url(JSON))).
+mint_session() {
+  local json payload sig
+  json="{\"uid\":\"$1\",\"name\":\"$2\",\"exp\":9999999999}"
+  payload=$(printf '%s' "$json" | b64url)
+  sig=$(printf '%s' "$payload" | openssl dgst -sha256 -hmac "$3" -binary | b64url)
+  printf '%s.%s' "$payload" "$sig"
 }
