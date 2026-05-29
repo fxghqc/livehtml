@@ -150,6 +150,8 @@
   let backoff = 500;
   let suppress = false; // suppress events while applying remote updates
   let pendingOutbox = [];
+  let authedIdentity = false;
+  let deniedLogin = false;
 
   function bind(el) {
     const key = el.dataset.live;
@@ -265,11 +267,17 @@
           peers = msg.peers || [];
           updateChip();
           break;
+        case "denied":
+          deniedLogin = true;
+          try { ws.close(); } catch {}
+          showLoginNeeded();
+          break;
       }
     };
     ws.onclose = () => {
       connected = false;
       updateChip();
+      if (deniedLogin) return; // login required — stop hammering
       const delay = Math.min(backoff, 8000) + Math.random() * 500;
       backoff = Math.min(backoff * 2, 8000);
       setTimeout(connect, delay);
@@ -284,6 +292,17 @@
   // ---- Presence chip UI ----
 
   let chip, chipDot, chipCount, chipPanel;
+
+  function showLoginNeeded() {
+    if (chipCount) chipCount.textContent = "需要登录";
+    if (chipDot) chipDot.style.background = "#ef4444";
+    const next = encodeURIComponent(location.pathname + location.search);
+    const a = document.createElement("a");
+    a.href = "/auth/dingtalk/login?next=" + next;
+    a.textContent = "点此登录";
+    a.style.cssText = "margin-left:8px;color:#2563eb;text-decoration:underline";
+    if (chip) chip.appendChild(a);
+  }
 
   function buildChip() {
     chip = document.createElement("div");
@@ -368,18 +387,20 @@
       name.textContent = (p.user && p.user.name) || p.id.slice(0, 6);
       if (p.id === myId) {
         name.textContent += " (你)";
-        name.style.cursor = "pointer";
-        name.title = "点击改名";
-        name.addEventListener("click", (e) => {
-          e.stopPropagation();
-          const newName = prompt("修改昵称", user.name || "");
-          if (newName && newName.trim()) {
-            user = { ...user, name: newName.trim() };
-            saveUserName(user.name);
-            sendMsg({ t: "pres", v: user });
-            updateChip();
-          }
-        });
+        if (!authedIdentity) {
+          name.style.cursor = "pointer";
+          name.title = "点击改名";
+          name.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const newName = prompt("修改昵称", user.name || "");
+            if (newName && newName.trim()) {
+              user = { ...user, name: newName.trim() };
+              saveUserName(user.name);
+              sendMsg({ t: "pres", v: user });
+              updateChip();
+            }
+          });
+        }
       }
       row.appendChild(dot);
       row.appendChild(name);
@@ -417,9 +438,7 @@
     }
   }
 
-  function start() {
-    buildChip();
-    scanAndBind(document);
+  function observeDom() {
     const obs = new MutationObserver((muts) => {
       for (const m of muts) {
         m.addedNodes.forEach((n) => {
@@ -436,7 +455,26 @@
       attributes: true,
       attributeFilter: ["data-live"],
     });
-    connect();
+  }
+
+  function start() {
+    buildChip();
+    scanAndBind(document);
+    observeDom();
+    // If the deployment requires login, /auth/me returns the verified identity.
+    fetch("/auth/me", { credentials: "same-origin" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((me) => {
+        if (me && me.authenticated && me.name) {
+          user = { name: me.name, userId: me.userId };
+          authedIdentity = true;
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        updateChip();
+        connect();
+      });
   }
 
   // ---- Public API ----
