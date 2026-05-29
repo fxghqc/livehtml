@@ -6,6 +6,7 @@ COPY package.json bun.lock* ./
 RUN bun install --frozen-lockfile --production 2>/dev/null || bun install --production
 
 COPY server.ts ./
+COPY auth ./auth
 COPY public ./public
 COPY examples ./examples
 COPY skill ./skill
