@@ -689,11 +689,14 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
         const g = apiGateFail(req); if (g) return g;
         const body = await readBodyToBuffer(req);
         if (!body) return errResp(`body must be non-empty and ≤ ${MAX_HTML_SIZE} bytes`, 400);
+        const isPub = /^(1|true|yes)$/i.test(req.headers.get("x-public") || "");
         await minio.putObject(MINIO_BUCKET, key, body, body.length, {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-cache",
+          public: isPub ? "1" : "0",
         });
-        return jsonResp({ ok: true, key, url: `/pages/${key}`, room: roomForPageKey(key) });
+        publicCache.set(key, isPub);
+        return jsonResp({ ok: true, key, url: `/pages/${key}`, room: roomForPageKey(key), public: isPub });
       }
 
       if (req.method === "GET") {
@@ -726,6 +729,7 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
         const room = roomForPageKey(key);
         rooms.delete(room);
         metaByRoom.delete(room);
+        publicCache.delete(key);
         try { await unlink(roomFile(room)); } catch {}
         broadcast(room, { t: "replace", state: {}, by: "delete" });
         bumpAndNotify(room);
