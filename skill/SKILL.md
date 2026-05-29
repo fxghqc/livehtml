@@ -216,6 +216,18 @@ done
 > (Cookbook 1). `by` is an opaque connection label, **not an authenticated
 > identity** — don't infer who-did-what or provenance from it.
 
+## 受保护部署（可选）
+
+若部署启用了登录/令牌保护：
+
+- **Agent 调用带令牌**：从 `~/.local/state/livehtml/api-token`（若存在）读取令牌，并在所有 `PUT /pages/<key>`、`GET/PUT/DELETE /pages/<key>/state`、`/state/<room>`、`/rooms` 请求上加头：
+  `Authorization: Bearer <token>`
+  未配置令牌的部署无需此头（向后兼容）。
+- **公开某个页面**（免登浏览）：上传时加头 `X-Public: 1`：
+  `curl -fsS -X PUT -H "X-Public: 1" --data-binary @page.html "$BASE/pages/<key>"`
+  默认（不带该头）页面为受保护，需钉钉登录后才能查看。
+- **人类查看者**：受保护页面在浏览器打开时会跳转钉钉扫码登录，仅本企业成员可访问；`by`/在线名单显示其真实姓名。生成的 HTML 无需任何改动。
+
 ## Managing pages
 
 ```bash

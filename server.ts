@@ -524,6 +524,11 @@ mkdir -p "$STATE_DIR"
 printf '%s' "$BASE" > "$STATE_DIR/base-url"
 echo "✓ base URL → $STATE_DIR/base-url"
 
+if [ -n "\${LIVEHTML_API_TOKEN:-}" ]; then
+  printf '%s' "$LIVEHTML_API_TOKEN" > "$STATE_DIR/api-token"
+  echo "✓ api token → $STATE_DIR/api-token"
+fi
+
 CLAUDE_DIR="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 CODEX_DIR="\${CODEX_HOME:-$HOME/.codex}"
 CURSOR_DIR="$HOME/.cursor"
@@ -567,6 +572,11 @@ $StateDir = Join-Path $HOME '.local/state/livehtml'
 New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
 [System.IO.File]::WriteAllText((Join-Path $StateDir 'base-url'), $Base)
 Write-Host "[ok] base URL -> $StateDir/base-url"
+
+if ($env:LIVEHTML_API_TOKEN) {
+  [System.IO.File]::WriteAllText((Join-Path $StateDir 'api-token'), $env:LIVEHTML_API_TOKEN)
+  Write-Host "[ok] api token -> $StateDir/api-token"
+}
 
 $claude = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }
 $codex  = if ($env:CODEX_HOME)        { $env:CODEX_HOME }        else { Join-Path $HOME '.codex' }
