@@ -1,5 +1,6 @@
 // auth/gate.ts
 import { timingSafeEqual } from "node:crypto";
+import { verifyApiToken } from "./session.ts";
 
 // A safe same-origin destination: must start with a single "/" and not "//".
 export function sanitizeNext(raw: string | null): string {
@@ -10,14 +11,44 @@ export function sanitizeNext(raw: string | null): string {
   return raw;
 }
 
-export function apiTokenOk(req: Request, token: string): boolean {
-  if (!token) return false;
+export interface ApiAuth {
+  ok: boolean;
+  uid?: string;
+}
+
+// Accept EITHER a constant-time match against the static token OR a valid
+// signed per-user api token. uid is set only for the signed path (attribution).
+export function apiTokenOk(req: Request, staticToken: string, sessionSecret: string, nowSec: number): ApiAuth {
   const h = req.headers.get("authorization") || "";
-  const prefix = "Bearer ";
-  if (!h.startsWith(prefix)) return false;
-  const got = Buffer.from(h.slice(prefix.length));
-  const want = Buffer.from(token);
-  return got.length === want.length && timingSafeEqual(got, want);
+  if (!h.startsWith("Bearer ")) return { ok: false };
+  const presented = h.slice("Bearer ".length);
+  if (staticToken) {
+    const a = Buffer.from(presented);
+    const b = Buffer.from(staticToken);
+    if (a.length === b.length && timingSafeEqual(a, b)) return { ok: true };
+  }
+  if (sessionSecret) {
+    const v = verifyApiToken(presented, sessionSecret, nowSec);
+    if (v) return { ok: true, uid: v.uid };
+  }
+  return { ok: false };
+}
+
+// True only for an http loopback URL with an explicit port and no userinfo.
+// This is the hard gate that prevents token exfiltration to arbitrary hosts.
+export function isLoopbackRedirect(raw: string | null): boolean {
+  if (!raw) return false;
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "http:") return false;
+  if (u.username || u.password) return false;
+  if (!u.port) return false;
+  const host = u.hostname;
+  return host === "127.0.0.1" || host === "localhost" || host === "[::1]" || host === "::1";
 }
 
 export function humanAllowed(a: { gateOn: boolean; isPublic: boolean; hasSession: boolean }): boolean {
