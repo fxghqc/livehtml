@@ -33,4 +33,24 @@ CODE=$(curl -sS -o /dev/null -w "%{http_code}" "$BASE/sync.js")
 assert_eq 200 "$CODE" "/sync.js should stay open"
 
 pass "all api-token assertions held"
+
+# === gate active via DingTalk (no static token) accepts a signed api token ===
+stop_server
+export DINGTALK_CLIENT_ID="testkey"
+export DINGTALK_CLIENT_SECRET="testsecret"
+export SESSION_SECRET="unit-secret"
+unset LIVEHTML_API_TOKEN
+start_server
+BASE="http://127.0.0.1:$SERVER_PORT"
+
+# no token -> 401 (gate active because DingTalk is on)
+CODE=$(curl -sS -o /dev/null -w "%{http_code}" "$BASE/pages/k9/state")
+assert_eq 401 "$CODE" "dingtalk-only gate: no token should be 401"
+
+# a signed api token (mint via the same HMAC the server uses) -> 200
+API=$(mint_api_token "u3" "Cee" "$SESSION_SECRET")
+CODE=$(curl -sS -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $API" "$BASE/pages/k9/state")
+assert_eq 200 "$CODE" "dingtalk-only gate: signed token should be 200"
+pass "signed per-user token satisfies the agent gate"
+
 echo "OK: api token gate"

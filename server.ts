@@ -75,10 +75,12 @@ async function isPublicPage(key: string): Promise<boolean> {
     return false;
   }
 }
-function apiGateFail(req: Request): Response | null {
-  if (!authCfg.apiTokenEnabled) return null;
-  if (apiTokenOk(req, authCfg.apiToken)) return null;
-  return new Response("unauthorized", { status: 401, headers: { ...CORS, "WWW-Authenticate": "Bearer" } });
+function apiAuth(req: Request): { ok: boolean; uid?: string; resp?: Response } {
+  const gateActive = authCfg.dingtalkEnabled || authCfg.apiTokenEnabled;
+  if (!gateActive) return { ok: true };
+  const r = apiTokenOk(req, authCfg.apiToken, authCfg.sessionSecret, nowSec());
+  if (r.ok) return { ok: true, uid: r.uid };
+  return { ok: false, resp: new Response("unauthorized", { status: 401, headers: { ...CORS, "WWW-Authenticate": "Bearer" } }) };
 }
 
 type RoomState = Record<string, unknown>;
@@ -279,7 +281,7 @@ function errResp(msg: string, status: number) {
   return new Response(msg, { status, headers: CORS });
 }
 
-async function handleStateRoom(req: Request, room: string): Promise<Response | null> {
+async function handleStateRoom(req: Request, room: string, by = "http"): Promise<Response | null> {
   if (req.method === "GET") {
     const state = await loadRoom(room);
     const url = new URL(req.url);
@@ -305,9 +307,9 @@ async function handleStateRoom(req: Request, room: string): Promise<Response | n
       return new Response("body must be a JSON object", { status: 400, headers: CORS });
     }
     rooms.set(room, body as RoomState);
-    replaceRoomMeta(room, Object.keys(body as RoomState), "http");
+    replaceRoomMeta(room, Object.keys(body as RoomState), by);
     scheduleSave(room);
-    broadcast(room, { t: "replace", state: body, by: "http" });
+    broadcast(room, { t: "replace", state: body, by });
     bumpAndNotify(room);
     return Response.json({ ok: true, room }, { headers: CORS });
   }
@@ -315,7 +317,7 @@ async function handleStateRoom(req: Request, room: string): Promise<Response | n
     rooms.set(room, {});
     metaByRoom.set(room, {});
     scheduleSave(room);
-    broadcast(room, { t: "replace", state: {}, by: "http" });
+    broadcast(room, { t: "replace", state: {}, by });
     bumpAndNotify(room);
     return Response.json({ ok: true, room }, { headers: CORS });
   }
@@ -627,7 +629,7 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
     }
 
     if (path === "/rooms" && req.method === "GET") {
-      const g = apiGateFail(req); if (g) return g;
+      const a = apiAuth(req); if (!a.ok) return a.resp!;
       const allRooms = new Set([...rooms.keys(), ...peersByRoom.keys()]);
       const out = Array.from(allRooms).map((room) => ({
         room,
@@ -640,7 +642,7 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
     // ---- /pages: HTML hosting backed by MinIO ----
 
     if (path === "/pages" || path === "/pages/") {
-      const g = apiGateFail(req); if (g) return g;
+      const a = apiAuth(req); if (!a.ok) return a.resp!;
       if (!minio) return errResp("minio not configured", 503);
       if (req.method !== "GET") return errResp("method not allowed", 405);
       const items: { key: string; size: number; lastModified: string; url: string }[] = [];
@@ -663,7 +665,7 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
       // /pages/<key>/state — alias for /state/pages/<key>, no MinIO needed.
       // GET with ?wait=<sec> opts into long-poll envelope; otherwise plain.
       if (rest.endsWith("/state")) {
-        const g = apiGateFail(req); if (g) return g;
+        const a = apiAuth(req); if (!a.ok) return a.resp!;
         const rawKey = rest.slice(0, -"/state".length);
         const key = sanitizePageKey(rawKey);
         if (!key) return errResp("invalid key", 400);
@@ -674,7 +676,7 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
             return await longPoll(req, room, waitSec, url.searchParams.get("since"));
           }
         }
-        const resp = await handleStateRoom(req, room);
+        const resp = await handleStateRoom(req, room, a.uid ?? "http");
         if (resp) return resp;
         return errResp("method not allowed", 405);
       }
@@ -696,7 +698,7 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
       // Mutating methods are agent surfaces: token-gate them BEFORE the MinIO
       // availability check so a bad/missing token returns 401, not 503.
       if (req.method === "PUT" || req.method === "DELETE") {
-        const g = apiGateFail(req); if (g) return g;
+        const a = apiAuth(req); if (!a.ok) return a.resp!;
       }
 
       if (!minio) return errResp("minio not configured", 503);
@@ -755,10 +757,10 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
     }
 
     if (path.startsWith("/state/")) {
-      const g = apiGateFail(req); if (g) return g;
+      const a = apiAuth(req); if (!a.ok) return a.resp!;
       const raw = decodeURIComponent(path.slice("/state/".length));
       const room = sanitizeRoom(raw);
-      const resp = await handleStateRoom(req, room);
+      const resp = await handleStateRoom(req, room, a.uid ?? "http");
       if (resp) return resp;
     }
 

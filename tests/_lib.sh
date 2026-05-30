@@ -182,3 +182,12 @@ mint_session() {
   sig=$(printf '%s' "$payload" | openssl dgst -sha256 -hmac "$3" -binary | b64url)
   printf '%s.%s' "$payload" "$sig"
 }
+
+# mint_api_token <uid> <name> <secret> — echo a signed api bearer (kind="api").
+mint_api_token() {
+  local json payload sig
+  json="{\"uid\":\"$1\",\"name\":\"$2\",\"kind\":\"api\",\"exp\":9999999999}"
+  payload=$(printf '%s' "$json" | b64url)
+  sig=$(printf '%s' "$payload" | openssl dgst -sha256 -hmac "$3" -binary | b64url)
+  printf '%s.%s' "$payload" "$sig"
+}
