@@ -492,6 +492,12 @@
     get room() {
       return room;
     },
+    get me() {
+      // Current participant. `userId` is the server-verified DingTalk id, present
+      // only when logged in; `id` is the per-connection clientId. Pages choose:
+      // per-connection -> me.id ; per-user -> me.userId || me.id.
+      return { id: myId, name: (user && user.name) || null, userId: (user && user.userId) || null };
+    },
     setUser(u) {
       user = typeof u === "string" ? { name: u } : u;
       if (user.name) saveUserName(user.name);

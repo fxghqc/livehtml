@@ -236,6 +236,29 @@ done
   默认（不带该头）页面为受保护，需钉钉登录后才能查看。
 - **人类查看者**：受保护页面在浏览器打开时会跳转钉钉扫码登录，仅本企业成员可访问；`by`/在线名单显示其真实姓名。生成的 HTML 无需任何改动。
 
+## 在线身份：按连接（clientId）还是按用户（userId）
+
+`LiveHtml.peers` 里每个 peer：
+- `p.id` —— **按连接**的关联 id（浏览器 localStorage 的 clientId）。同一个人开两个标签 = 两个 peer。页面默认用它给「自己的」状态做 key。
+- `p.user.name` —— 显示名；开了钉钉登录门时是**服务端校验过的真实姓名**，不可伪造。
+- `p.user.userId` —— **按用户**的可信 id（钉钉 userId），仅登录后存在。
+
+当前页面自己的身份：`LiveHtml.me = { id, name, userId }`（`userId` 仅登录后有）。
+
+**选哪个做 key：**
+- 想「每个浏览器/连接一个席位」（多设备各自标注、互不干扰）→ 用 `p.id` / `LiveHtml.me.id`（默认，向后兼容，匿名也能用）。
+- 想「一个人一个身份」（登录后一人一票、跨设备延续、在线列表去重）→ 用 `p.user.userId || p.id` 和 `LiveHtml.me.userId || LiveHtml.me.id`。
+
+例（planning-poker，登录后按 userId 计票）：
+```js
+function voteKey(){ var m = LiveHtml.me; return (m && m.userId) || ME; }   // 自己
+function peerKey(p){ return (p.user && p.user.userId) || p.id; }           // 别人/席位
+LiveHtml.set("vote:" + voteKey(), card);                                   // 写
+// 渲染 / 去重时用 peerKey(p)，"我的"席位判定 peerKey(p) === voteKey()
+```
+
+注：写操作广播里的 `by` **永远**是服务端校验过的 `userId`（可信归属），与上面展示用的 key 相互独立——别把 `by` 当成连接 id。
+
 ## Managing pages
 
 ```bash

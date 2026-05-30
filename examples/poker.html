@@ -87,7 +87,7 @@
     <div class="hint">投票时大家只看到「已出牌」；点「翻牌」才同时揭晓数字。</div>
   </div>
 
-  <div class="foot">livehtml demo · 房间 <code>pitch/poker</code> · 无需登录，打开即用</div>
+  <div class="foot">livehtml demo · 房间 <code>pitch/poker</code> · 登录后一人一票（按 userId 计票）</div>
 </div>
 
 <script src="/sync.js"></script>
@@ -103,6 +103,11 @@
     }catch(e){ return "anon"; }
   }
   var ME = myId();
+  // Vote identity. When logged in (DingTalk gate on) key by the verified per-USER
+  // id so one person == one vote across tabs/devices; otherwise fall back to the
+  // per-connection clientId. See livehtml SKILL.md "在线身份：按连接 vs 按用户".
+  function voteKey(){ var m = window.LiveHtml && window.LiveHtml.me; return (m && m.userId) || ME; }
+  function peerKey(p){ return (p.user && p.user.userId) || p.id; }
 
   // ---- name ----
   var nameEl = document.getElementById("name");
@@ -118,7 +123,7 @@
     var b = document.createElement("button");
     b.className = "cardbtn"; b.textContent = v; b.dataset.v = v;
     b.addEventListener("click", function(){
-      if(window.LiveHtml) window.LiveHtml.set("vote:"+ME, v);
+      if(window.LiveHtml) window.LiveHtml.set("vote:"+voteKey(), v);
     });
     deck.appendChild(b);
   });
@@ -148,23 +153,27 @@
     var revealed = !!state["revealed"];
     onlineN.textContent = peers.length;
 
+    var MK = voteKey();
     // highlight my selected card
-    var myVote = state["vote:"+ME];
+    var myVote = state["vote:"+MK];
     Array.prototype.forEach.call(deck.children, function(b){
       b.classList.toggle("sel", b.dataset.v === myVote);
     });
 
-    // roster
+    // roster — one seat per identity (dedupe multiple connections of the same user)
     roster.innerHTML = "";
     var nums = [];
+    var seen = {};
     peers.forEach(function(p){
-      var vote = state["vote:"+p.id];
+      var k = peerKey(p);
+      if(seen[k]) return; seen[k] = 1;
+      var vote = state["vote:"+k];
       var seat = document.createElement("div");
       seat.className = "seat" + (vote!=null?" voted":"");
       var nm = document.createElement("div");
-      nm.className = "nm" + (p.id===ME?" me":"");
+      nm.className = "nm" + (k===MK?" me":"");
       nm.textContent = (p.user&&p.user.name) || p.id.slice(0,6);
-      if(p.id===ME) nm.textContent += " (你)";
+      if(k===MK) nm.textContent += " (你)";
       var rt = document.createElement("div");
       if(vote==null){ rt.className="chiprt pending"; rt.textContent="·"; }
       else if(!revealed){ rt.className="facedown"; rt.textContent="🂠"; }
