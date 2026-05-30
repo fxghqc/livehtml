@@ -166,14 +166,11 @@ DINGTALK_CORP_ID=          # 可选，再做一层企业 corpId 软校验
 LIVEHTML_PUBLIC_BASE_URL=http://192.168.130.12:39191
 SESSION_SECRET=           # 开了登录门**必填**，用长随机串
 SESSION_TTL_SEC=604800    # 会话有效期，默认 7 天
-LIVEHTML_API_TOKEN=       # 开了登录门**必填**（见下）：保护 agent/数据接口
+LIVEHTML_API_TOKEN=       # 可选（CI/应急）：静态共享令牌；agent 推荐用 `livehtml login` 拿个人 token
 ```
 
-> **fail-closed**：设了 `DINGTALK_CLIENT_ID` 却没设 `SESSION_SECRET` **或** `LIVEHTML_API_TOKEN`，
-> server 直接拒绝启动，不会半配置地裸奔。为什么也要 `LIVEHTML_API_TOKEN`？登录门只挡人类面
-> （页面 HTML + `/ws`）；状态 API（`/state/*`、`/pages/<key>/state`、长轮询）、`/pages/` 列表、
-> `/rooms` 这些数据/枚举接口是 token 挡的。只开登录门不开 token，受保护页面的**实时数据仍可被任何人
-> 读写/枚举**（`*` CORS 还允许跨域），所以二者必须一起开。
+> **fail-closed**：设了 `DINGTALK_CLIENT_ID` 却没设 `SESSION_SECRET`，server 拒绝启动。
+> （不再要求 `LIVEHTML_API_TOKEN`——agent 用 `livehtml login` 拿个人 token，见下。）
 
 部署侧需要操作（见 spec §15）：
 
@@ -188,9 +185,19 @@ LIVEHTML_API_TOKEN=       # 开了登录门**必填**（见下）：保护 agent
 ### 2. API token 门（面向 agent / 读回接口）
 
 挡在 agent 用的读回接口前面：状态 HTTP API（`/state/*`）与页面上传（`PUT /pages/<key>`）。
-设置 `LIVEHTML_API_TOKEN` 即开启，之后这些调用都要带 `Authorization: Bearer <token>`，
-否则返回 `401`。耦合是**单向**的：token 门可以单独开（不需要钉钉）；但反过来，开了钉钉登录门
-就**必须**同时设 token（见上方 fail-closed），否则数据接口会裸奔。
+设置 `LIVEHTML_API_TOKEN` 即开启静态令牌门。开了钉钉登录门时，agent 接口默认由**个人签名 token**
+（`livehtml login` 获得）保护，所以静态 `LIVEHTML_API_TOKEN` 变成**可选**（CI/应急）。两种凭证都被接受。
+
+### Agent 拿 token：`livehtml login`（推荐）
+
+开了钉钉登录门后，agent 不用 operator 手发密钥——跑一次：
+
+```bash
+node ~/.local/state/livehtml/livehtml-login.cjs    # 或 livehtml login
+```
+
+浏览器扫码登录 → 个人签名 token 自动写入 `~/.local/state/livehtml/api-token`，
+约月级到期前自动静默续期。`LIVEHTML_API_TOKEN`（静态共享密钥）仅作 CI/应急可选项。
 
 ```bash
 # ---- agent 接口 API token 门（留空即关闭）----

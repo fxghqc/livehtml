@@ -220,9 +220,11 @@ done
 
 若部署启用了登录/令牌保护：
 
-- **Agent 调用带令牌**：从 `~/.local/state/livehtml/api-token`（若存在）读取令牌，并在所有 `PUT /pages/<key>`、`GET/PUT/DELETE /pages/<key>/state`、`/state/<room>`、`/rooms` 请求上加头：
-  `Authorization: Bearer <token>`
-  未配置令牌的部署无需此头（向后兼容）。
+- **Agent 一次性登录拿令牌**：运行 `node ~/.local/state/livehtml/livehtml-login.cjs`（或 `livehtml login`）。
+  浏览器扫码登录钉钉后，个人 API token 自动写入 `~/.local/state/livehtml/api-token`（自动续期，约月级才再扫一次）。
+  之后所有 `PUT /pages/<key>`、`GET/PUT/DELETE /pages/<key>/state`、`/state/<room>`、`/rooms` 请求带头：
+  `Authorization: Bearer $(cat ~/.local/state/livehtml/api-token)`
+  未启用登录/令牌的部署无需此步（向后兼容）。
 - **公开某个页面**（免登浏览）：上传时加头 `X-Public: 1`：
   `curl -fsS -X PUT -H "X-Public: 1" --data-binary @page.html "$BASE/pages/<key>"`
   默认（不带该头）页面为受保护，需钉钉登录后才能查看。

@@ -2,6 +2,9 @@
 
 **Date:** 2026-05-29
 **Status:** Approved for planning (brainstorming complete)
+
+> **Update (2026-05-30):** §5/§14's "DingTalk on ⇒ `LIVEHTML_API_TOKEN` required" coupling is **superseded** by `docs/superpowers/specs/2026-05-30-livehtml-login-cli-design.md`: per-user signed tokens (via `livehtml login`) now satisfy the agent gate, so the static token is optional. The agent gate is active when `dingtalkEnabled || apiTokenEnabled`.
+
 **Scope owner:** livehtml server (`server.ts`), client (`public/sync.js`), skill (`skill/SKILL.md`), installer (`scripts/install-skill.cjs` + server-generated `/install`, `/install.ps1`).
 
 ## 1. Goal
