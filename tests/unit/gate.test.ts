@@ -62,6 +62,8 @@ test("isLoopbackRedirect rejects external/https/no-port/userinfo", () => {
   expect(isLoopbackRedirect("http://127.0.0.1/cb")).toBe(false);       // no port
   expect(isLoopbackRedirect("http://user@127.0.0.1:5000/cb")).toBe(false); // userinfo
   expect(isLoopbackRedirect("http://127.0.0.1.evil.com:80/cb")).toBe(false);
+  expect(isLoopbackRedirect("http://127.0.0.1:5000/cb?x=1")).toBe(false); // query
+  expect(isLoopbackRedirect("http://127.0.0.1:5000/cb#frag")).toBe(false); // fragment
   expect(isLoopbackRedirect(null)).toBe(false);
 });
 

@@ -13,7 +13,12 @@ const path = require("node:path");
 
 const STATE_DIR = path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local/state"), "livehtml");
 const readState = (f) => { try { return fs.readFileSync(path.join(STATE_DIR, f), "utf8").trim(); } catch { return ""; } };
-const writeState = (f, v) => { fs.mkdirSync(STATE_DIR, { recursive: true }); fs.writeFileSync(path.join(STATE_DIR, f), v, { mode: 0o600 }); };
+const writeState = (f, v) => {
+  const p = path.join(STATE_DIR, f);
+  fs.mkdirSync(STATE_DIR, { recursive: true });
+  fs.writeFileSync(p, v, { mode: 0o600 });
+  try { fs.chmodSync(p, 0o600); } catch {} // {mode} only applies on create; chmod covers a pre-existing file
+};
 
 function arg(name) { const i = process.argv.indexOf(name); return i >= 0 ? process.argv[i + 1] : ""; }
 const BASE = (arg("--base") || process.env.LIVEHTML_BASE_URL || readState("base-url")).replace(/\/+$/, "");
@@ -49,18 +54,19 @@ function openBrowser(u) {
 function loopbackLogin() {
   return new Promise((resolve, reject) => {
     const nonce = crypto.randomBytes(16).toString("hex");
-    let got = null;
+    let settled = false;
+    let timer;
+    const finish = (fn, arg) => { if (settled) return; settled = true; clearTimeout(timer); try { server.close(); } catch {} fn(arg); };
     const server = http.createServer((req, res) => {
       const u = new URL(req.url, "http://127.0.0.1");
       if (u.pathname !== "/cb") { res.writeHead(404); res.end(); return; }
       if (u.searchParams.get("n") !== nonce) { res.writeHead(400); res.end("bad nonce"); return; }
-      got = { token: u.searchParams.get("token"), name: u.searchParams.get("name") || "", exp: u.searchParams.get("exp") || "" };
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      const got = { token: u.searchParams.get("token"), name: u.searchParams.get("name") || "", exp: u.searchParams.get("exp") || "" };
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", Connection: "close" });
       res.end("<!doctype html><meta charset=utf-8><body style='font:16px sans-serif;text-align:center;margin-top:80px'>✓ 登录成功，可以关闭这个标签页。</body>");
-      setTimeout(() => server.close(), 150);
+      got.token ? finish(resolve, got) : finish(reject, new Error("no token received"));
     });
-    const timer = setTimeout(() => { server.close(); reject(new Error("timed out waiting for login (120s)")); }, 120000);
-    server.on("close", () => { clearTimeout(timer); got && got.token ? resolve(got) : reject(new Error("no token received")); });
+    timer = setTimeout(() => finish(reject, new Error("timed out waiting for login (120s)")), 120000);
     server.listen(0, "127.0.0.1", () => {
       const port = server.address().port;
       const cb = `http://127.0.0.1:${port}/cb`;

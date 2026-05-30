@@ -112,6 +112,14 @@ export async function handleAuthRoute(
 
   if (path === "/auth/token") {
     if (!cfg.dingtalkEnabled) return new Response("not found", { status: 404, headers: CORS });
+    // CSRF defense: the legit flow reaches here via a same-origin 302 from the
+    // DingTalk callback (or a user-opened top-level navigation = "none"). Reject
+    // cross-site navigations so a malicious page cannot drive a logged-in
+    // browser to mint + exfiltrate a token to a loopback listener.
+    const sfs = req.headers.get("sec-fetch-site");
+    if (sfs && sfs !== "same-origin" && sfs !== "none") {
+      return new Response("cross-site request rejected", { status: 403, headers: { ...CORS, "Cache-Control": "no-store" } });
+    }
     const sess = readSession(req, cfg.sessionSecret, nowSec);
     if (!sess) {
       // Not logged in yet — bounce through DingTalk login, preserving our query.

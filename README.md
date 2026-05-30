@@ -166,11 +166,11 @@ DINGTALK_CORP_ID=          # 可选，再做一层企业 corpId 软校验
 LIVEHTML_PUBLIC_BASE_URL=http://192.168.130.12:39191
 SESSION_SECRET=           # 开了登录门**必填**，用长随机串
 SESSION_TTL_SEC=604800    # 会话有效期，默认 7 天
-LIVEHTML_API_TOKEN=       # 可选（CI/应急）：静态共享令牌；agent 推荐用 `livehtml login` 拿个人 token
+LIVEHTML_API_TOKEN=       # 可选（CI/应急）：静态共享令牌；agent 推荐用 `livehtml-login` 拿个人 token
 ```
 
 > **fail-closed**：设了 `DINGTALK_CLIENT_ID` 却没设 `SESSION_SECRET`，server 拒绝启动。
-> （不再要求 `LIVEHTML_API_TOKEN`——agent 用 `livehtml login` 拿个人 token，见下。）
+> （不再要求 `LIVEHTML_API_TOKEN`——agent 用 `livehtml-login` 拿个人 token，见下。）
 
 部署侧需要操作（见 spec §15）：
 
@@ -186,14 +186,14 @@ LIVEHTML_API_TOKEN=       # 可选（CI/应急）：静态共享令牌；agent �
 
 挡在 agent 用的读回接口前面：状态 HTTP API（`/state/*`）与页面上传（`PUT /pages/<key>`）。
 设置 `LIVEHTML_API_TOKEN` 即开启静态令牌门。开了钉钉登录门时，agent 接口默认由**个人签名 token**
-（`livehtml login` 获得）保护，所以静态 `LIVEHTML_API_TOKEN` 变成**可选**（CI/应急）。两种凭证都被接受。
+（`livehtml-login` 获得）保护，所以静态 `LIVEHTML_API_TOKEN` 变成**可选**（CI/应急）。两种凭证都被接受。
 
-### Agent 拿 token：`livehtml login`（推荐）
+### Agent 拿 token：`livehtml-login`（推荐）
 
 开了钉钉登录门后，agent 不用 operator 手发密钥——跑一次：
 
 ```bash
-node ~/.local/state/livehtml/livehtml-login.cjs    # 或 livehtml login
+node ~/.local/state/livehtml/livehtml-login.cjs    # 或 livehtml-login
 ```
 
 浏览器扫码登录 → 个人签名 token 自动写入 `~/.local/state/livehtml/api-token`，

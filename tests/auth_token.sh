@@ -30,6 +30,12 @@ CODE=$(curl -sS -o /dev/null -w "%{http_code}" --cookie "lh_sess=$SESS" "$BASE/a
 assert_eq 400 "$CODE" "step3 external cli should be 400"
 pass "step 3: external cli rejected"
 
+# 3b. cross-site navigation (Sec-Fetch-Site) is rejected before minting (CSRF)
+CODE=$(curl -sS -o /dev/null -w "%{http_code}" --cookie "lh_sess=$SESS" \
+  -H "Sec-Fetch-Site: cross-site" "$BASE/auth/token?cli=http%3A%2F%2F127.0.0.1%3A59999%2Fcb&n=abc")
+assert_eq 403 "$CODE" "step3b cross-site mint should be 403"
+pass "step 3b: cross-site mint rejected"
+
 # 4. no session -> 302 bounce to login
 CODE=$(curl -sS -o /dev/null -w "%{http_code}" "$BASE/auth/token?format=json")
 assert_eq 302 "$CODE" "step4 no-session should bounce to login"

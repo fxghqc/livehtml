@@ -46,9 +46,10 @@ export function isLoopbackRedirect(raw: string | null): boolean {
   }
   if (u.protocol !== "http:") return false;
   if (u.username || u.password) return false;
+  if (u.search || u.hash) return false; // the server appends ?token=…; the CLI's cb carries neither
   if (!u.port) return false;
-  const host = u.hostname;
-  return host === "127.0.0.1" || host === "localhost" || host === "[::1]" || host === "::1";
+  const host = u.hostname; // URL normalizes IPv6 to bracketed form, e.g. "[::1]"
+  return host === "127.0.0.1" || host === "localhost" || host === "[::1]";
 }
 
 export function humanAllowed(a: { gateOn: boolean; isPublic: boolean; hasSession: boolean }): boolean {
