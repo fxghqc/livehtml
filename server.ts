@@ -806,15 +806,17 @@ Write-Host "Done. Restart your agent. Protected deploy? Run: bun <skills>/liveht
         }
 
         peer.room = room;
-        // Trusted identity overrides any client-supplied user/clientId.
+        // peer.id stays the client-chosen correlation id — pages key their own
+        // state by it (e.g. `vote:<clientId>`) and match it against the presence
+        // id. Authentication makes the *name* trustworthy and stamps `by` with the
+        // verified uid (see set/del); it does NOT replace the presence id.
+        if (typeof msg.clientId === "string" && msg.clientId.length <= 64) {
+          peer.id = msg.clientId;
+        }
         if (peer.auth) {
           peer.user = { name: peer.auth.name, userId: peer.auth.uid };
-          peer.id = peer.auth.uid;
         } else {
           peer.user = msg.user ?? null;
-          if (typeof msg.clientId === "string" && msg.clientId.length <= 64) {
-            peer.id = msg.clientId;
-          }
         }
         const set = peersByRoom.get(room) ?? new Set<ServerWebSocket<WsData>>();
         set.add(ws);
@@ -827,12 +829,16 @@ Write-Host "Done. Restart your agent. Protected deploy? Run: bun <skills>/liveht
 
       if (!peer.room) return;
 
+      // `by` = the verified uid when authenticated (trustworthy attribution),
+      // else the client correlation id. Independent of the presence id.
+      const by = peer.auth ? peer.auth.uid : peer.id;
+
       if (msg.t === "set" && typeof msg.key === "string") {
         const state = await loadRoom(peer.room);
         state[msg.key] = msg.v;
-        setKeyMeta(peer.room, msg.key, peer.id);
+        setKeyMeta(peer.room, msg.key, by);
         scheduleSave(peer.room);
-        broadcast(peer.room, { t: "set", key: msg.key, v: msg.v, by: peer.id }, ws);
+        broadcast(peer.room, { t: "set", key: msg.key, v: msg.v, by }, ws);
         bumpAndNotify(peer.room);
         return;
       }
@@ -842,7 +848,7 @@ Write-Host "Done. Restart your agent. Protected deploy? Run: bun <skills>/liveht
         delete state[msg.key];
         delKeyMeta(peer.room, msg.key);
         scheduleSave(peer.room);
-        broadcast(peer.room, { t: "del", key: msg.key, by: peer.id }, ws);
+        broadcast(peer.room, { t: "del", key: msg.key, by }, ws);
         bumpAndNotify(peer.room);
         return;
       }

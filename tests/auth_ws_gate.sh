@@ -30,7 +30,7 @@ ws_first_frame() {  # $1 cookie-or-empty
       try { ws.close(); } catch {}
       setTimeout(() => process.exit(0), 0);
     };
-    ws.addEventListener("open", () => ws.send(JSON.stringify({ t: "hi", room: "pages/secret" })));
+    ws.addEventListener("open", () => ws.send(JSON.stringify({ t: "hi", room: "pages/secret", clientId: "cli-7" })));
     ws.addEventListener("message", (e) => done(String(e.data)));
     ws.addEventListener("close", () => done("CLOSED"));
     setTimeout(() => done("TIMEOUT"), 4000);
@@ -41,7 +41,12 @@ OUT_ANON=$(ws_first_frame "")
 case "$OUT_ANON" in *'"t":"denied"'*|CLOSED) pass "step 1: anon WS denied ($OUT_ANON)" ;; *) fail "step1 expected denied, got: $OUT_ANON" ;; esac
 
 OUT_AUTH=$(ws_first_frame "lh_sess=$SESS")
-case "$OUT_AUTH" in *'"t":"init"'*'"you":"u7"'*) pass "step 2: authed WS init with trusted you=u7" ;; *) fail "step2 expected init you=u7, got: $OUT_AUTH" ;; esac
+# Presence id stays the client-chosen clientId (pages key state by it); the
+# trusted NAME is server-owned. The uid is NOT used as the presence id.
+echo "$OUT_AUTH" | grep -q '"t":"init"'    || fail "step2 expected init, got: $OUT_AUTH"
+echo "$OUT_AUTH" | grep -q '"you":"cli-7"' || fail "step2 presence id must equal clientId cli-7, got: $OUT_AUTH"
+echo "$OUT_AUTH" | grep -q '"name":"Seven"' || fail "step2 trusted name Seven missing, got: $OUT_AUTH"
+pass "step 2: authed WS init — presence id = clientId (cli-7), trusted name Seven"
 
 # 3. An authed peer cannot spoof its presence name via a follow-up `pres`.
 # Connect, send hi, then send pres{name:"HACKER"}; the broadcast pres frame
