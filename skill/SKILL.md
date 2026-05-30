@@ -215,12 +215,19 @@ done
 
 > **Field-level metadata (`?meta=1`)** — a plain GET supports `?meta=1`, which
 > returns `{version:2, fields:{<key>:{v, ts, by}}}` — when each key was last
-> written and by which connection. This is for **debugging / storage
-> inspection only**; normal agent workflows should read the flat state
-> (Cookbook 1). `by` is an opaque connection label, **not an authenticated
-> identity** — don't infer who-did-what or provenance from it.
+> written and by whom. This is for **debugging / storage inspection only**;
+> normal agent workflows should read the flat state (Cookbook 1). `by` is the
+> **verified DingTalk userId** when the login gate is on (trustworthy
+> provenance); with the gate off it's an opaque connection label — only treat
+> it as identity on a protected deployment.
 
-## 受保护部署（可选）
+---
+
+> **以下两节仅适用于「部署开启了登录/令牌门」的情况，且都是可选 / 进阶。**
+> 普通协作页面就是上面那套——`data-live` + 一行 `<script>` + `PUT`，**生成的 HTML 一个字都不用改**。
+> 登录、在线真实姓名、可信 `by`、访问控制全部由 server + sync.js 处理。不在登录门后部署就直接跳过这两节。
+
+## 受保护部署（可选·进阶）
 
 若部署启用了登录/令牌保护：
 
@@ -236,7 +243,7 @@ done
   默认（不带该头）页面为受保护，需钉钉登录后才能查看。
 - **人类查看者**：受保护页面在浏览器打开时会跳转钉钉扫码登录，仅本企业成员可访问；`by`/在线名单显示其真实姓名。生成的 HTML 无需任何改动。
 
-## 在线身份：按连接（clientId）还是按用户（userId）
+## 在线身份（可选·进阶）：按连接（clientId）还是按用户（userId）
 
 `LiveHtml.peers` 里每个 peer：
 - `p.id` —— **按连接**的关联 id（浏览器 localStorage 的 clientId）。同一个人开两个标签 = 两个 peer。页面默认用它给「自己的」状态做 key。
