@@ -15,6 +15,7 @@ const STATE_DIR = join(ROOT, "state");
 const PUBLIC_DIR = join(ROOT, "public");
 const EXAMPLES_DIR = join(ROOT, "examples");
 const SKILL_DIR = join(ROOT, "skill");
+const SCRIPTS_DIR = join(ROOT, "scripts");
 const MAX_HTML_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_WAIT_SEC = 60;
 
@@ -489,6 +490,13 @@ const server = Bun.serve({
       );
     }
 
+    if (path === "/login.cjs") {
+      return (
+        (await serveStatic(SCRIPTS_DIR, "livehtml-login.cjs", "application/javascript; charset=utf-8")) ??
+        new Response("// livehtml-login.cjs not found", { status: 404, headers: CORS })
+      );
+    }
+
     if (path.startsWith("/examples/")) {
       const name = path.slice("/examples/".length);
       const ext = name.split(".").pop()?.toLowerCase();
@@ -525,6 +533,9 @@ STATE_DIR="\${XDG_STATE_HOME:-$HOME/.local/state}/livehtml"
 mkdir -p "$STATE_DIR"
 printf '%s' "$BASE" > "$STATE_DIR/base-url"
 echo "✓ base URL → $STATE_DIR/base-url"
+
+curl -fsSL "$BASE/login.cjs" -o "$STATE_DIR/livehtml-login.cjs" 2>/dev/null && \
+  echo "✓ login CLI → $STATE_DIR/livehtml-login.cjs (run: node \$STATE_DIR/livehtml-login.cjs)"
 
 if [ -n "\${LIVEHTML_API_TOKEN:-}" ]; then
   printf '%s' "$LIVEHTML_API_TOKEN" > "$STATE_DIR/api-token"
@@ -574,6 +585,8 @@ $StateDir = Join-Path $HOME '.local/state/livehtml'
 New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
 [System.IO.File]::WriteAllText((Join-Path $StateDir 'base-url'), $Base)
 Write-Host "[ok] base URL -> $StateDir/base-url"
+
+try { Invoke-WebRequest -Uri "$Base/login.cjs" -OutFile (Join-Path $StateDir 'livehtml-login.cjs') -UseBasicParsing; Write-Host "[ok] login CLI -> $StateDir/livehtml-login.cjs" } catch {}
 
 if ($env:LIVEHTML_API_TOKEN) {
   [System.IO.File]::WriteAllText((Join-Path $StateDir 'api-token'), $env:LIVEHTML_API_TOKEN)
