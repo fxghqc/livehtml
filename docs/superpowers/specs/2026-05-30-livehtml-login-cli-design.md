@@ -55,13 +55,13 @@ The token is handed to the CLI by redirecting the browser to a localhost URL. If
 
 ## 6. CLI: `livehtml login`
 
-- **Runtime:** Node, zero-dependency (`scripts/livehtml-login.cjs`), consistent with the existing `scripts/install-skill.cjs` bin. Uses only `node:http`, `node:crypto`, `node:child_process`, `node:fs`.
+- **Runtime:** Bun + TypeScript, zero-dependency (`scripts/livehtml-login.ts`, run with `bun`), consistent with the Bun/TS server and tests. Uses `node:http`/`node:crypto`/`node:child_process`/`node:fs` (Bun-compatible) + the global `fetch` for refresh.
 - **Resolve base URL:** from `~/.local/state/livehtml/base-url` (or `--base`/`LIVEHTML_BASE_URL`).
 - **Flow:**
   1. If a valid cached token exists and is >N days from expiry → print "already logged in as <name>" and exit. If valid but near expiry → try `POST /auth/token/refresh` (no browser); on success, save + exit.
   2. Else: bind `127.0.0.1:0`; build `cliNonce`; open the browser (`open`/`xdg-open`/`start`, with a printed fallback URL) to `"$BASE/auth/dingtalk/login?next=" + enc("/auth/token?cli=" + enc("http://127.0.0.1:PORT/cb") + "&n=" + cliNonce)`.
   3. The one-shot `/cb` handler validates the `n` nonce, reads `token`/`name`/`exp`, writes `~/.local/state/livehtml/api-token` (mode 600), prints `✓ logged in as <name> (expires <date>)`, returns a "✓ 你可以关闭这个标签页" HTML page, and exits 0. Timeout → exit non-zero with guidance.
-- **Distribution:** the server serves the script (`GET /skill/livehtml-login.cjs`, already covered by the `/skill/*` static route) and the `/install` script additionally fetches it to `$STATE_DIR/livehtml-login.cjs` and prints the run command. `package.json` gains a `livehtml-login` bin.
+- **Distribution:** the server serves the script at `GET /login.ts` and the `/install` script additionally fetches it to `$STATE_DIR/livehtml-login.ts` and prints `bun …` as the run command. `package.json` gains a `livehtml-login` bin (Bun shebang).
 - **Agent usage afterward (unchanged surface):** read `~/.local/state/livehtml/api-token`, send `Authorization: Bearer <token>`. SKILL.md updated to say "run `livehtml login` once" instead of hand-copying.
 
 ## 7. Supersedes / migration

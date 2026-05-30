@@ -7,12 +7,12 @@
   "private": true,
   "bin": {
     "livehtml-skill": "./scripts/install-skill.cjs",
-    "livehtml-login": "./scripts/livehtml-login.cjs"
+    "livehtml-login": "./scripts/livehtml-login.ts"
   },
   "files": [
     "skill",
     "scripts/install-skill.cjs",
-    "scripts/livehtml-login.cjs"
+    "scripts/livehtml-login.ts"
   ],
   "scripts": {
     "start": "bun server.ts",

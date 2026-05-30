@@ -193,7 +193,7 @@ LIVEHTML_API_TOKEN=       # 可选（CI/应急）：静态共享令牌；agent �
 开了钉钉登录门后，agent 不用 operator 手发密钥——跑一次：
 
 ```bash
-node ~/.local/state/livehtml/livehtml-login.cjs    # 或 livehtml-login
+bun ~/.local/state/livehtml/livehtml-login.ts    # 或 livehtml-login
 ```
 
 浏览器扫码登录 → 个人签名 token 自动写入 `~/.local/state/livehtml/api-token`，

@@ -490,10 +490,10 @@ const server = Bun.serve({
       );
     }
 
-    if (path === "/login.cjs") {
+    if (path === "/login.ts") {
       return (
-        (await serveStatic(SCRIPTS_DIR, "livehtml-login.cjs", "application/javascript; charset=utf-8")) ??
-        new Response("// livehtml-login.cjs not found", { status: 404, headers: CORS })
+        (await serveStatic(SCRIPTS_DIR, "livehtml-login.ts", "text/plain; charset=utf-8")) ??
+        new Response("// livehtml-login.ts not found", { status: 404, headers: CORS })
       );
     }
 
@@ -534,8 +534,8 @@ mkdir -p "$STATE_DIR"
 printf '%s' "$BASE" > "$STATE_DIR/base-url"
 echo "✓ base URL → $STATE_DIR/base-url"
 
-curl -fsSL "$BASE/login.cjs" -o "$STATE_DIR/livehtml-login.cjs" 2>/dev/null && \
-  echo "✓ login CLI → $STATE_DIR/livehtml-login.cjs (run: node \$STATE_DIR/livehtml-login.cjs)"
+curl -fsSL "$BASE/login.ts" -o "$STATE_DIR/livehtml-login.ts" 2>/dev/null && \
+  echo "✓ login CLI → $STATE_DIR/livehtml-login.ts (run: bun \$STATE_DIR/livehtml-login.ts)"
 
 if [ -n "\${LIVEHTML_API_TOKEN:-}" ]; then
   printf '%s' "$LIVEHTML_API_TOKEN" > "$STATE_DIR/api-token"
@@ -586,7 +586,7 @@ New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
 [System.IO.File]::WriteAllText((Join-Path $StateDir 'base-url'), $Base)
 Write-Host "[ok] base URL -> $StateDir/base-url"
 
-try { Invoke-WebRequest -Uri "$Base/login.cjs" -OutFile (Join-Path $StateDir 'livehtml-login.cjs') -UseBasicParsing; Write-Host "[ok] login CLI -> $StateDir/livehtml-login.cjs" } catch {}
+try { Invoke-WebRequest -Uri "$Base/login.ts" -OutFile (Join-Path $StateDir 'livehtml-login.ts') -UseBasicParsing; Write-Host "[ok] login CLI -> $StateDir/livehtml-login.ts (run: bun $StateDir/livehtml-login.ts)" } catch {}
 
 if ($env:LIVEHTML_API_TOKEN) {
   [System.IO.File]::WriteAllText((Join-Path $StateDir 'api-token'), $env:LIVEHTML_API_TOKEN)

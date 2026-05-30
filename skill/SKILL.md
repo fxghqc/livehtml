@@ -224,7 +224,7 @@ done
 
 若部署启用了登录/令牌保护：
 
-- **Agent 一次性登录拿令牌**：运行 `node ~/.local/state/livehtml/livehtml-login.cjs`（或 `livehtml-login`）。
+- **Agent 一次性登录拿令牌**：运行 `bun ~/.local/state/livehtml/livehtml-login.ts`（或 `livehtml-login`）。
   浏览器扫码登录钉钉后，个人 API token 自动写入 `~/.local/state/livehtml/api-token`（自动续期，约月级才再扫一次）。
   之后所有 `PUT /pages/<key>`、`GET/PUT/DELETE /pages/<key>/state`、`/state/<room>`、`/rooms` 请求带头：
   `Authorization: Bearer $(cat ~/.local/state/livehtml/api-token)`
