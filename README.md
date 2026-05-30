@@ -140,6 +140,98 @@ curl http://host:39191/rooms
 
 任何 HTTP 写操作都会通过 WebSocket 实时广播给在线客户端。
 
+## 登录与鉴权（可选）
+
+默认 livehtml **不带鉴权**（房间名当作能力凭证）。需要公网/局域网共享但又想限制访问时，
+可以打开两道**互相独立、各自用环境变量开关**的门。两道门都关掉 = 行为跟以前完全一样。
+
+> **zero magic 仍然成立**：鉴权全部在 `server.ts` + `public/sync.js` 里完成，
+> agent 生成的 HTML 一个字都不用改。
+> 设计细节见 `docs/superpowers/specs/2026-05-29-dingtalk-oauth-login-design.md`。
+
+### 1. 钉钉扫码登录门（面向人类访问者）
+
+挡在 `GET /pages/<key>` 的 HTML 与 `/ws` 前面。设置 `DINGTALK_CLIENT_ID` 即开启：
+浏览器没有有效会话时，被 302 重定向到钉钉扫码登录；扫码后我们用授权码换 union/userId，
+**校验对方是不是本企业成员**，通过后下发一个 HMAC 签名的无状态会话 cookie（`lh_sess`）。
+登录后 presence 显示真实姓名，勾选/编辑记录的 `by` 就是可信的钉钉 userId。
+
+```bash
+# ---- 人类登录门（留空即关闭）----
+DINGTALK_CLIENT_ID=        # 设了它，/pages/* 的人类访问就需要登录
+DINGTALK_CLIENT_SECRET=
+DINGTALK_CORP_ID=          # 可选，再做一层企业 corpId 软校验
+# 用来拼**精确匹配**的 OAuth redirect_uri 的稳定外部地址；
+# 必须等于你在钉钉控制台登记的回调地址。留空则回退到请求来源。
+LIVEHTML_PUBLIC_BASE_URL=http://192.168.130.12:39191
+SESSION_SECRET=           # 开了登录门**必填**，用长随机串
+SESSION_TTL_SEC=604800    # 会话有效期，默认 7 天
+LIVEHTML_API_TOKEN=       # 可选（CI/应急）：静态共享令牌；agent 推荐用 `livehtml-login` 拿个人 token
+```
+
+> **fail-closed**：设了 `DINGTALK_CLIENT_ID` 却没设 `SESSION_SECRET`，server 拒绝启动。
+> （不再要求 `LIVEHTML_API_TOKEN`——agent 用 `livehtml-login` 拿个人 token，见下。）
+
+部署侧需要操作（见 spec §15）：
+
+1. 钉钉开发者控制台 → 应用 → **登录与分享**，**逐字**登记回调地址
+   `http://192.168.130.12:39191/auth/dingtalk/callback`（协议/host/端口/path 必须精确匹配）。
+   **先确认控制台接受 `http://` 回调**——这是头号可行性风险；如果它强制 `https`，
+   就用 HTTPS 反代挡在前面，并把 `LIVEHTML_PUBLIC_BASE_URL` 设成那个 origin。
+2. 给应用授**通讯录读权限**（`getbyunionid` / `v2/user/get` 需要），否则这两个调用会报错（按 502 处理）。
+3. 确保 `livehtml` 容器能**出网**访问 `api.dingtalk.com` 和 `oapi.dingtalk.com`。
+4. 所有访问者的桌面浏览器都要能路由到回调 host（局域网内成立）。
+
+### 2. API token 门（面向 agent / 读回接口）
+
+挡在 agent 用的读回接口前面：状态 HTTP API（`/state/*`）与页面上传（`PUT /pages/<key>`）。
+设置 `LIVEHTML_API_TOKEN` 即开启静态令牌门。开了钉钉登录门时，agent 接口默认由**个人签名 token**
+（`livehtml-login` 获得）保护，所以静态 `LIVEHTML_API_TOKEN` 变成**可选**（CI/应急）。两种凭证都被接受。
+
+### Agent 拿 token：`livehtml-login`（推荐）
+
+开了钉钉登录门后，agent 不用 operator 手发密钥——跑一次：
+
+```bash
+bun ~/.claude/skills/livehtml/scripts/livehtml-login.ts    # 脚本随 skill 安装；或用 livehtml-login
+```
+
+脚本作为 skill 的一部分随 SKILL.md 一起安装（`<skills>/livehtml/scripts/`）；运行时**自动从
+`~/.local/state/livehtml/` 读取 `base-url`（和已有的 `api-token`）**，无需 `--base`。
+浏览器扫码登录 → 个人签名 token 自动写入 `~/.local/state/livehtml/api-token`，约月级到期前自动
+静默续期。`LIVEHTML_API_TOKEN`（静态共享密钥）仅作 CI/应急可选项。
+
+```bash
+# ---- agent 接口 API token 门（留空即关闭）----
+LIVEHTML_API_TOKEN=       # 设了它，state/upload 调用需要 Bearer token
+```
+
+```bash
+# agent 上传页面（带 token）
+curl -X PUT -H "Authorization: Bearer $LIVEHTML_API_TOKEN" \
+  --data-binary @report.html http://host:39191/pages/aura/report
+
+# 读回状态（带 token）
+curl -H "Authorization: Bearer $LIVEHTML_API_TOKEN" \
+  http://host:39191/state/pages/aura/report
+```
+
+配套 skill 的 installer 会把 token 存到 `~/.local/state/livehtml/api-token`，
+agent 调用时自动读取。
+
+### 3. 公开页例外（`X-Public: 1`）
+
+开了钉钉登录门后，默认所有 `/pages/<key>` 都要登录。要让**某一页**免登录（公开看 + 公开协作），
+上传时带 `X-Public: 1`，该标记会持久化为 MinIO 对象元数据（`public=1`，元数据是唯一真相来源）：
+
+```bash
+# 上传一个公开页（任何人免登录即可访问 + 协作）
+curl -X PUT -H "Authorization: Bearer $LIVEHTML_API_TOKEN" -H "X-Public: 1" \
+  --data-binary @open.html http://host:39191/pages/open
+```
+
+不带该 header（或 `X-Public: 0`）则覆盖为私有页。
+
 ## 数据闭环（Claude 读回）
 
 状态以 JSON 落盘在 `state/<room>.json`：
@@ -184,7 +276,7 @@ WS 端点：`ws://host:port/ws`，消息全是 JSON。
 
 - **不是 CRDT**：两人同时编辑同一文本字段时，后写覆盖先写。对 checkbox/select/数值这种"原子值"完全 OK；不适合做多人同时编辑长文档
 - **文本输入冲突保护**：远端更新到达时，如果当前用户正在 focus 该字段，远端更新会被忽略（避免打断输入）
-- **无认证**：房间名足够长/随机就够用；公网部署需要自己加鉴权
+- **鉴权可选**：默认不带鉴权，房间名足够长/随机就够用；公网/局域网共享可开钉钉登录门 + API token 门（见上方「登录与鉴权」）
 - **无 schema**：状态是任意 JSON 对象，agent 决定 key 命名约定
 
 ## 文件结构
@@ -285,7 +377,7 @@ node scripts/install-skill.cjs status
 ## 路线图（按需扩展）
 
 - [ ] HTTPS / WSS 支持（自签或 Let's Encrypt）
-- [ ] 简单 token 鉴权（房间名 + 密钥）
+- [x] 鉴权：钉钉扫码登录门（人类）+ API token 门（agent）+ `X-Public` 公开页例外（见「登录与鉴权」）
 - [ ] Yjs 通道：给真正需要并发编辑的字段开个 `data-live-yjs`，复用同一个 WebSocket 连接
 - [ ] 历史/审计：state 写入时追加到 `state/<room>.log`
 - [ ] 房间列表 UI（`/` 着陆页加在线房间表格）

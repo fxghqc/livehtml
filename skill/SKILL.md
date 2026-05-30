@@ -106,6 +106,10 @@ works.
 All three cookbooks use `-A "livehtml-agent-readback/1"` so the server access
 log can distinguish agent read-backs from browser traffic. Keep it.
 
+> On a protected deployment (登录/令牌门已开), every read-back call below also needs
+> `-H "Authorization: Bearer $(cat ~/.local/state/livehtml/api-token)"` — run `livehtml-login`
+> once first (see 受保护部署 below). Unprotected deployments need neither.
+
 ### Cookbook 1 — read one page's state
 
 ```bash
@@ -215,6 +219,22 @@ done
 > inspection only**; normal agent workflows should read the flat state
 > (Cookbook 1). `by` is an opaque connection label, **not an authenticated
 > identity** — don't infer who-did-what or provenance from it.
+
+## 受保护部署（可选）
+
+若部署启用了登录/令牌保护：
+
+- **Agent 一次性登录拿令牌**：运行本 skill 自带的 `scripts/livehtml-login.ts`（与本 SKILL.md 同目录），
+  例如 `bun ~/.claude/skills/livehtml/scripts/livehtml-login.ts`（路径随 agent 而定；或用 `livehtml-login`）。
+  脚本**自动从 `~/.local/state/livehtml/` 读取 base-url**，无需传参。
+  浏览器扫码登录钉钉后，个人 API token 自动写入 `~/.local/state/livehtml/api-token`（自动续期，约月级才再扫一次）。
+  之后所有 `PUT /pages/<key>`、`GET/PUT/DELETE /pages/<key>/state`、`/state/<room>`、`/rooms` 请求带头：
+  `Authorization: Bearer $(cat ~/.local/state/livehtml/api-token)`
+  未启用登录/令牌的部署无需此步（向后兼容）。
+- **公开某个页面**（免登浏览）：上传时加头 `X-Public: 1`：
+  `curl -fsS -X PUT -H "X-Public: 1" --data-binary @page.html "$BASE/pages/<key>"`
+  默认（不带该头）页面为受保护，需钉钉登录后才能查看。
+- **人类查看者**：受保护页面在浏览器打开时会跳转钉钉扫码登录，仅本企业成员可访问；`by`/在线名单显示其真实姓名。生成的 HTML 无需任何改动。
 
 ## Managing pages
 

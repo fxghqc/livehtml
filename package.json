@@ -6,7 +6,8 @@
   "type": "module",
   "private": true,
   "bin": {
-    "livehtml-skill": "./scripts/install-skill.cjs"
+    "livehtml-skill": "./scripts/install-skill.cjs",
+    "livehtml-login": "./skill/scripts/livehtml-login.ts"
   },
   "files": [
     "skill",
@@ -15,6 +16,7 @@
   "scripts": {
     "start": "bun server.ts",
     "dev": "bun --hot server.ts",
+    "test:unit": "bun test tests/unit",
     "install-skill": "node scripts/install-skill.cjs install --link"
   },
   "devDependencies": {

@@ -3,6 +3,11 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { Client as MinioClient } from "minio";
+import { loadAuthConfig } from "./auth/config.ts";
+import { createDingTalkClient } from "./auth/dingtalk.ts";
+import { handleAuthRoute } from "./auth/routes.ts";
+import { readSession, parseCookies } from "./auth/session.ts";
+import { apiTokenOk, humanAllowed, parsePublicMeta, sanitizeNext, roomPublicKey } from "./auth/gate.ts";
 
 const PORT = Number(process.env.PORT || 8787);
 const ROOT = import.meta.dir;
@@ -47,8 +52,39 @@ if (MINIO_ENDPOINT) {
   }
 }
 
+// ---- Auth (optional; both gates off => unchanged behavior) ----
+const authCfg = loadAuthConfig(process.env as Record<string, string | undefined>);
+const ding = authCfg.dingtalkEnabled
+  ? createDingTalkClient({ clientId: authCfg.clientId, clientSecret: authCfg.clientSecret, corpId: authCfg.corpId })
+  : null;
+const nowSec = () => Math.floor(Date.now() / 1000);
+if (authCfg.dingtalkEnabled) console.log(`[auth] DingTalk login gate ENABLED`);
+if (authCfg.apiTokenEnabled) console.log(`[auth] API token gate ENABLED`);
+
+// Per-page public flag cache (source of truth = MinIO object metadata).
+const publicCache = new Map<string, boolean>();
+async function isPublicPage(key: string): Promise<boolean> {
+  if (!minio) return false;
+  if (publicCache.has(key)) return publicCache.get(key)!;
+  try {
+    const st: any = await minio.statObject(MINIO_BUCKET, key);
+    const pub = parsePublicMeta(st?.metaData);
+    publicCache.set(key, pub);
+    return pub;
+  } catch {
+    return false;
+  }
+}
+function apiAuth(req: Request): { ok: boolean; uid?: string; resp?: Response } {
+  const gateActive = authCfg.dingtalkEnabled || authCfg.apiTokenEnabled;
+  if (!gateActive) return { ok: true };
+  const r = apiTokenOk(req, authCfg.apiToken, authCfg.sessionSecret, nowSec());
+  if (r.ok) return { ok: true, uid: r.uid };
+  return { ok: false, resp: new Response("unauthorized", { status: 401, headers: { ...CORS, "WWW-Authenticate": "Bearer" } }) };
+}
+
 type RoomState = Record<string, unknown>;
-type Peer = { id: string; room: string; user: unknown };
+type Peer = { id: string; room: string; user: unknown; auth: { uid: string; name: string } | null };
 type WsData = { peer: Peer };
 
 const rooms = new Map<string, RoomState>();
@@ -245,7 +281,7 @@ function errResp(msg: string, status: number) {
   return new Response(msg, { status, headers: CORS });
 }
 
-async function handleStateRoom(req: Request, room: string): Promise<Response | null> {
+async function handleStateRoom(req: Request, room: string, by = "http"): Promise<Response | null> {
   if (req.method === "GET") {
     const state = await loadRoom(room);
     const url = new URL(req.url);
@@ -271,9 +307,9 @@ async function handleStateRoom(req: Request, room: string): Promise<Response | n
       return new Response("body must be a JSON object", { status: 400, headers: CORS });
     }
     rooms.set(room, body as RoomState);
-    replaceRoomMeta(room, Object.keys(body as RoomState), "http");
+    replaceRoomMeta(room, Object.keys(body as RoomState), by);
     scheduleSave(room);
-    broadcast(room, { t: "replace", state: body, by: "http" });
+    broadcast(room, { t: "replace", state: body, by });
     bumpAndNotify(room);
     return Response.json({ ok: true, room }, { headers: CORS });
   }
@@ -281,7 +317,7 @@ async function handleStateRoom(req: Request, room: string): Promise<Response | n
     rooms.set(room, {});
     metaByRoom.set(room, {});
     scheduleSave(room);
-    broadcast(room, { t: "replace", state: {}, by: "http" });
+    broadcast(room, { t: "replace", state: {}, by });
     bumpAndNotify(room);
     return Response.json({ ok: true, room }, { headers: CORS });
   }
@@ -418,13 +454,26 @@ const server = Bun.serve({
     const path = url.pathname;
 
     if (path === "/ws") {
+      const sess = authCfg.dingtalkEnabled ? readSession(req, authCfg.sessionSecret, nowSec()) : null;
       const ok = srv.upgrade(req, {
-        data: { peer: { id: crypto.randomUUID(), room: "", user: null } } satisfies WsData,
+        data: {
+          peer: {
+            id: crypto.randomUUID(),
+            room: "",
+            user: null,
+            auth: sess ? { uid: sess.uid, name: sess.name } : null,
+          },
+        } satisfies WsData,
       });
       return ok ? undefined : new Response("upgrade failed", { status: 400 });
     }
 
     if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
+
+    if (path.startsWith("/auth/")) {
+      const r = await handleAuthRoute(req, url, authCfg, ding, nowSec());
+      if (r) return r;
+    }
 
     if (path === "/" || path === "/index.html") {
       return (
@@ -460,10 +509,11 @@ const server = Bun.serve({
     // /install.ps1          → Windows installer (irm <url>/install.ps1 | iex)
     // /skill/<file>         → raw skill source files (SKILL.md, evals/evals.json, ...)
     //
-    // Both installers drop SKILL.md into every detected agent's global skills
-    // dir (Claude Code / Codex / Cursor — paths per the `skills` ecosystem),
-    // falling back to Claude Code if none is detected, and write the base URL
-    // to <XDG_STATE_HOME|~/.local/state>/livehtml/base-url.
+    // Both installers drop the skill bundle (SKILL.md + scripts/livehtml-login.ts)
+    // into every detected agent's global skills dir (Claude Code / Codex / Cursor
+    // — paths per the `skills` ecosystem), falling back to Claude Code if none is
+    // detected. Runtime config (base-url + optional api-token) goes to
+    // <XDG_STATE_HOME|~/.local/state>/livehtml/, which the skill scripts auto-load.
     if (path === "/install" && req.method === "GET") {
       const base = `${url.protocol}//${url.host}`;
       const script = `#!/bin/sh
@@ -472,10 +522,19 @@ set -e
 BASE="${base}"
 SKILL="livehtml"
 
+# Config/state dir holds ONLY runtime config the skill scripts auto-load:
+# base-url (+ optional api-token). The skill CODE (incl. the login CLI) is
+# bundled into the skill dir below — not here.
 STATE_DIR="\${XDG_STATE_HOME:-$HOME/.local/state}/livehtml"
 mkdir -p "$STATE_DIR"
 printf '%s' "$BASE" > "$STATE_DIR/base-url"
 echo "✓ base URL → $STATE_DIR/base-url"
+
+if [ -n "\${LIVEHTML_API_TOKEN:-}" ]; then
+  printf '%s' "$LIVEHTML_API_TOKEN" > "$STATE_DIR/api-token"
+  chmod 600 "$STATE_DIR/api-token" 2>/dev/null || true
+  echo "✓ api token → $STATE_DIR/api-token"
+fi
 
 CLAUDE_DIR="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 CODEX_DIR="\${CODEX_HOME:-$HOME/.codex}"
@@ -486,9 +545,10 @@ install_to() {
   # \$1 display name  \$2 agent home  \$3 skills root
   [ -d "$2" ] || return 0
   dest="$3/$SKILL"
-  mkdir -p "$dest"
+  mkdir -p "$dest/scripts"
   curl -fsSL "$BASE/skill/SKILL.md" -o "$dest/SKILL.md"
-  echo "✓ $1 → $dest/SKILL.md"
+  curl -fsSL "$BASE/skill/scripts/livehtml-login.ts" -o "$dest/scripts/livehtml-login.ts" 2>/dev/null || true
+  echo "✓ $1 → $dest (SKILL.md + scripts/livehtml-login.ts)"
   n=$((n + 1))
 }
 
@@ -498,11 +558,13 @@ install_to "Cursor"      "$CURSOR_DIR" "$CURSOR_DIR/skills"
 
 if [ "$n" -eq 0 ]; then
   dest="$CLAUDE_DIR/skills/$SKILL"
-  mkdir -p "$dest"
+  mkdir -p "$dest/scripts"
   curl -fsSL "$BASE/skill/SKILL.md" -o "$dest/SKILL.md"
-  echo "✓ no agent detected; installed for Claude Code → $dest/SKILL.md"
+  curl -fsSL "$BASE/skill/scripts/livehtml-login.ts" -o "$dest/scripts/livehtml-login.ts" 2>/dev/null || true
+  echo "✓ no agent detected; installed for Claude Code → $dest"
 fi
-echo "✓ Done. Restart your agent (Claude Code / Codex / Cursor) to pick up the skill."
+echo "✓ Done. Restart your agent to pick up the skill."
+echo "  Protected deploy? Log in once: bun <skills>/livehtml/scripts/livehtml-login.ts"
 `;
       return new Response(script, {
         headers: { ...CORS, "Content-Type": "text/x-shellscript; charset=utf-8" },
@@ -521,6 +583,11 @@ New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
 [System.IO.File]::WriteAllText((Join-Path $StateDir 'base-url'), $Base)
 Write-Host "[ok] base URL -> $StateDir/base-url"
 
+if ($env:LIVEHTML_API_TOKEN) {
+  [System.IO.File]::WriteAllText((Join-Path $StateDir 'api-token'), $env:LIVEHTML_API_TOKEN)
+  Write-Host "[ok] api token -> $StateDir/api-token"
+}
+
 $claude = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }
 $codex  = if ($env:CODEX_HOME)        { $env:CODEX_HOME }        else { Join-Path $HOME '.codex' }
 $cursor = Join-Path $HOME '.cursor'
@@ -532,23 +599,28 @@ $targets = @(
 )
 
 $md = (Invoke-WebRequest -Uri "$Base/skill/SKILL.md" -UseBasicParsing).Content
+$login = $null
+try { $login = (Invoke-WebRequest -Uri "$Base/skill/scripts/livehtml-login.ts" -UseBasicParsing).Content } catch {}
+function Install-Skill($dest) {
+  New-Item -ItemType Directory -Force -Path (Join-Path $dest 'scripts') | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $dest 'SKILL.md'), $md)
+  if ($login) { [System.IO.File]::WriteAllText((Join-Path (Join-Path $dest 'scripts') 'livehtml-login.ts'), $login) }
+}
 $n = 0
 foreach ($t in $targets) {
   if (Test-Path $t.home) {
     $dest = Join-Path $t.skills $Skill
-    New-Item -ItemType Directory -Force -Path $dest | Out-Null
-    [System.IO.File]::WriteAllText((Join-Path $dest 'SKILL.md'), $md)
-    Write-Host "[ok] $($t.name) -> $dest"
+    Install-Skill $dest
+    Write-Host "[ok] $($t.name) -> $dest (SKILL.md + scripts/livehtml-login.ts)"
     $n++
   }
 }
 if ($n -eq 0) {
   $dest = Join-Path (Join-Path $claude 'skills') $Skill
-  New-Item -ItemType Directory -Force -Path $dest | Out-Null
-  [System.IO.File]::WriteAllText((Join-Path $dest 'SKILL.md'), $md)
+  Install-Skill $dest
   Write-Host "[ok] no agent detected; Claude Code -> $dest"
 }
-Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up the skill."
+Write-Host "Done. Restart your agent. Protected deploy? Run: bun <skills>/livehtml/scripts/livehtml-login.ts"
 `;
       return new Response(script, {
         headers: { ...CORS, "Content-Type": "text/plain; charset=utf-8" },
@@ -570,6 +642,7 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
     }
 
     if (path === "/rooms" && req.method === "GET") {
+      const a = apiAuth(req); if (!a.ok) return a.resp!;
       const allRooms = new Set([...rooms.keys(), ...peersByRoom.keys()]);
       const out = Array.from(allRooms).map((room) => ({
         room,
@@ -582,6 +655,7 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
     // ---- /pages: HTML hosting backed by MinIO ----
 
     if (path === "/pages" || path === "/pages/") {
+      const a = apiAuth(req); if (!a.ok) return a.resp!;
       if (!minio) return errResp("minio not configured", 503);
       if (req.method !== "GET") return errResp("method not allowed", 405);
       const items: { key: string; size: number; lastModified: string; url: string }[] = [];
@@ -604,6 +678,7 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
       // /pages/<key>/state — alias for /state/pages/<key>, no MinIO needed.
       // GET with ?wait=<sec> opts into long-poll envelope; otherwise plain.
       if (rest.endsWith("/state")) {
+        const a = apiAuth(req); if (!a.ok) return a.resp!;
         const rawKey = rest.slice(0, -"/state".length);
         const key = sanitizePageKey(rawKey);
         if (!key) return errResp("invalid key", 400);
@@ -614,23 +689,45 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
             return await longPoll(req, room, waitSec, url.searchParams.get("since"));
           }
         }
-        const resp = await handleStateRoom(req, room);
+        const resp = await handleStateRoom(req, room, a.uid ?? "http");
         if (resp) return resp;
         return errResp("method not allowed", 405);
       }
 
-      if (!minio) return errResp("minio not configured", 503);
       const key = sanitizePageKey(rest);
       if (!key) return errResp("invalid key", 400);
+
+      // DingTalk human gate on the page HTML GET. Runs before MinIO so an
+      // unauthenticated visitor is redirected to login even if storage is down.
+      if (req.method === "GET" && authCfg.dingtalkEnabled) {
+        const isPub = await isPublicPage(key);
+        const hasSession = !!readSession(req, authCfg.sessionSecret, nowSec());
+        if (!humanAllowed({ gateOn: true, isPublic: isPub, hasSession })) {
+          const loc = `/auth/dingtalk/login?next=${encodeURIComponent(path)}`;
+          return new Response(null, { status: 302, headers: { ...CORS, Location: loc } });
+        }
+      }
+
+      // Mutating methods are agent surfaces: token-gate them BEFORE the MinIO
+      // availability check so a bad/missing token returns 401, not 503.
+      if (req.method === "PUT" || req.method === "DELETE") {
+        const a = apiAuth(req); if (!a.ok) return a.resp!;
+      }
+
+      if (!minio) return errResp("minio not configured", 503);
 
       if (req.method === "PUT") {
         const body = await readBodyToBuffer(req);
         if (!body) return errResp(`body must be non-empty and ≤ ${MAX_HTML_SIZE} bytes`, 400);
-        await minio.putObject(MINIO_BUCKET, key, body, body.length, {
+        const isPub = /^(1|true|yes)$/i.test(req.headers.get("x-public") || "");
+        const meta: Record<string, string> = {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-cache",
-        });
-        return jsonResp({ ok: true, key, url: `/pages/${key}`, room: roomForPageKey(key) });
+        };
+        if (isPub) meta.public = "1"; // private pages omit the key (spec §10)
+        await minio.putObject(MINIO_BUCKET, key, body, body.length, meta);
+        publicCache.set(key, isPub);
+        return jsonResp({ ok: true, key, url: `/pages/${key}`, room: roomForPageKey(key), public: isPub });
       }
 
       if (req.method === "GET") {
@@ -662,6 +759,7 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
         const room = roomForPageKey(key);
         rooms.delete(room);
         metaByRoom.delete(room);
+        publicCache.delete(key);
         try { await unlink(roomFile(room)); } catch {}
         broadcast(room, { t: "replace", state: {}, by: "delete" });
         bumpAndNotify(room);
@@ -672,9 +770,10 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
     }
 
     if (path.startsWith("/state/")) {
+      const a = apiAuth(req); if (!a.ok) return a.resp!;
       const raw = decodeURIComponent(path.slice("/state/".length));
       const room = sanitizeRoom(raw);
-      const resp = await handleStateRoom(req, room);
+      const resp = await handleStateRoom(req, room, a.uid ?? "http");
       if (resp) return resp;
     }
 
@@ -693,24 +792,35 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
 
       if (msg.t === "hi") {
         const room = sanitizeRoom(msg.room || "default");
+
+        // DingTalk gate: when on, a browser needs a session unless the room is
+        // backed by a public page. Non-page rooms are deny-by-default.
+        if (authCfg.dingtalkEnabled && !peer.auth) {
+          const key = roomPublicKey(room);
+          const isPub = key ? await isPublicPage(key) : false;
+          if (!humanAllowed({ gateOn: true, isPublic: isPub, hasSession: false })) {
+            ws.send(JSON.stringify({ t: "denied", reason: "login_required" }));
+            ws.close();
+            return;
+          }
+        }
+
         peer.room = room;
-        peer.user = msg.user ?? null;
-        if (typeof msg.clientId === "string" && msg.clientId.length <= 64) {
-          peer.id = msg.clientId;
+        // Trusted identity overrides any client-supplied user/clientId.
+        if (peer.auth) {
+          peer.user = { name: peer.auth.name, userId: peer.auth.uid };
+          peer.id = peer.auth.uid;
+        } else {
+          peer.user = msg.user ?? null;
+          if (typeof msg.clientId === "string" && msg.clientId.length <= 64) {
+            peer.id = msg.clientId;
+          }
         }
         const set = peersByRoom.get(room) ?? new Set<ServerWebSocket<WsData>>();
         set.add(ws);
         peersByRoom.set(room, set);
         const state = await loadRoom(room);
-        ws.send(
-          JSON.stringify({
-            t: "init",
-            room,
-            state,
-            peers: presenceList(room),
-            you: peer.id,
-          }),
-        );
+        ws.send(JSON.stringify({ t: "init", room, state, peers: presenceList(room), you: peer.id }));
         broadcast(room, { t: "pres", peers: presenceList(room) }, ws);
         return;
       }
@@ -738,7 +848,13 @@ Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up t
       }
 
       if (msg.t === "pres") {
-        peer.user = msg.v ?? null;
+        // Trusted identity is server-owned: an authenticated peer cannot rename
+        // itself via pres (mirror the `hi` branch). Anonymous peers may self-label.
+        if (peer.auth) {
+          peer.user = { name: peer.auth.name, userId: peer.auth.uid };
+        } else {
+          peer.user = msg.v ?? null;
+        }
         broadcast(peer.room, { t: "pres", peers: presenceList(peer.room) });
         return;
       }
