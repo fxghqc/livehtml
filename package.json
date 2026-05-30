@@ -6,11 +6,13 @@
   "type": "module",
   "private": true,
   "bin": {
-    "livehtml-skill": "./scripts/install-skill.cjs"
+    "livehtml-skill": "./scripts/install-skill.cjs",
+    "livehtml-login": "./scripts/livehtml-login.cjs"
   },
   "files": [
     "skill",
-    "scripts/install-skill.cjs"
+    "scripts/install-skill.cjs",
+    "scripts/livehtml-login.cjs"
   ],
   "scripts": {
     "start": "bun server.ts",
