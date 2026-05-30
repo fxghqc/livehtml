@@ -18,6 +18,18 @@ export interface DingTalkClient {
   verifyAuthCode(authCode: string): Promise<VerifyResult>;
 }
 
+// Non-secret diagnostic log: step + HTTP status + DingTalk code/errcode/message.
+// Never logs tokens/secrets/authCode. Surfaces *why* a 502 happened in `docker logs`.
+function logd(step: string, detail: Record<string, unknown>): void {
+  let d = "";
+  try {
+    d = JSON.stringify(detail);
+  } catch {
+    d = "(uninspectable)";
+  }
+  console.warn(`[auth:dingtalk] ${step} -> ${d}`);
+}
+
 export function createDingTalkClient(
   cfg: { clientId: string; clientSecret: string; corpId: string },
   fetchImpl: typeof fetch = fetch,
@@ -26,71 +38,96 @@ export function createDingTalkClient(
   let appToken = "";
   let appTokenExp = 0;
 
-  async function postJson(url: string, body: unknown, headers: Record<string, string> = {}): Promise<any> {
+  async function postJson(
+    url: string,
+    body: unknown,
+    headers: Record<string, string> = {},
+  ): Promise<{ status: number; json: any }> {
     const res = await fetchImpl(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(8000),
     });
-    return res.json();
+    const json = await res.json().catch(() => ({}));
+    return { status: res.status, json };
   }
 
   async function getAppToken(): Promise<string> {
     const now = clock();
     if (appToken && now < appTokenExp - APP_TOKEN_SKEW_SEC) return appToken;
-    const j = await postJson("https://api.dingtalk.com/v1.0/oauth2/accessToken", {
+    const { status, json } = await postJson("https://api.dingtalk.com/v1.0/oauth2/accessToken", {
       appKey: cfg.clientId,
       appSecret: cfg.clientSecret,
     });
-    if (!j.accessToken) throw new Error("app token fetch failed");
-    appToken = j.accessToken;
-    appTokenExp = now + (Number(j.expireIn) || 7200);
+    if (!json.accessToken) {
+      logd("appToken", { status, code: json.code, message: json.message });
+      throw new Error("app token fetch failed");
+    }
+    appToken = json.accessToken;
+    appTokenExp = now + (Number(json.expireIn) || 7200);
     return appToken;
   }
 
   async function verifyAuthCode(authCode: string): Promise<VerifyResult> {
     try {
       // Call 2 — exchange authCode -> USER token.
-      const tok = await postJson("https://api.dingtalk.com/v1.0/oauth2/userAccessToken", {
+      const ex = await postJson("https://api.dingtalk.com/v1.0/oauth2/userAccessToken", {
         clientId: cfg.clientId,
         clientSecret: cfg.clientSecret,
         code: authCode,
         grantType: "authorization_code",
         refreshToken: "",
       });
-      if (!tok.accessToken) return { ok: false, reason: "error" };
-      if (cfg.corpId && tok.corpId && tok.corpId !== cfg.corpId) return { ok: false, reason: "not_member" };
+      if (!ex.json.accessToken) {
+        logd("userAccessToken", { status: ex.status, code: ex.json.code, message: ex.json.message });
+        return { ok: false, reason: "error" };
+      }
+      if (cfg.corpId && ex.json.corpId && ex.json.corpId !== cfg.corpId) {
+        logd("corpId-mismatch", { configured: cfg.corpId, got: ex.json.corpId });
+        return { ok: false, reason: "not_member" };
+      }
 
       // Call 3 — USER token -> unionId.
       const meRes = await fetchImpl("https://api.dingtalk.com/v1.0/contact/users/me", {
         method: "GET",
-        headers: { "x-acs-dingtalk-access-token": tok.accessToken, "Content-Type": "application/json" },
+        headers: { "x-acs-dingtalk-access-token": ex.json.accessToken, "Content-Type": "application/json" },
         signal: AbortSignal.timeout(8000),
       });
-      const me = await meRes.json();
+      const me = await meRes.json().catch(() => ({}));
       const unionId: string = me.unionId;
-      if (!unionId) return { ok: false, reason: "error" };
+      if (!unionId) {
+        logd("contact/users/me", { status: meRes.status, code: me.code, message: me.message });
+        return { ok: false, reason: "error" };
+      }
 
       // Org gate — APP token -> getbyunionid.
       const app = await getAppToken();
-      const byUnion = await postJson(
+      const bu = await postJson(
         `https://oapi.dingtalk.com/topapi/user/getbyunionid?access_token=${encodeURIComponent(app)}`,
         { unionid: unionId },
       );
-      if (byUnion.errcode === NOT_MEMBER_ERRCODE) return { ok: false, reason: "not_member" };
-      if (byUnion.errcode !== 0 || !byUnion.result?.userid) return { ok: false, reason: "error" };
-      const userId: string = byUnion.result.userid;
+      if (bu.json.errcode === NOT_MEMBER_ERRCODE) {
+        logd("getbyunionid", { errcode: bu.json.errcode, errmsg: bu.json.errmsg, result: "not_member" });
+        return { ok: false, reason: "not_member" };
+      }
+      if (bu.json.errcode !== 0 || !bu.json.result?.userid) {
+        logd("getbyunionid", { errcode: bu.json.errcode, errmsg: bu.json.errmsg });
+        return { ok: false, reason: "error" };
+      }
+      const userId: string = bu.json.result.userid;
 
       // Display name — v2/user/get.
       const detail = await postJson(
         `https://oapi.dingtalk.com/topapi/v2/user/get?access_token=${encodeURIComponent(app)}`,
         { userid: userId, language: "zh_CN" },
       );
-      const name: string = (detail.errcode === 0 && detail.result?.name) || me.nick || userId;
+      if (detail.json.errcode !== 0) logd("v2/user/get", { errcode: detail.json.errcode, errmsg: detail.json.errmsg });
+      const name: string = (detail.json.errcode === 0 && detail.json.result?.name) || me.nick || userId;
 
       return { ok: true, userId, name };
-    } catch {
+    } catch (e: any) {
+      logd("exception", { message: (e && e.message) || String(e) });
       return { ok: false, reason: "error" };
     }
   }
