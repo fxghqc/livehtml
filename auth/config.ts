@@ -9,6 +9,7 @@ export interface AuthConfig {
   sessionTtlSec: number;
   apiTokenEnabled: boolean;
   apiToken: string;
+  apiTokenTtlSec: number;
 }
 
 export function loadAuthConfig(env: Record<string, string | undefined>): AuthConfig {
@@ -25,17 +26,6 @@ export function loadAuthConfig(env: Record<string, string | undefined>): AuthCon
   if (dingtalkEnabled && !clientSecret) {
     throw new Error("DINGTALK_CLIENT_ID is set but DINGTALK_CLIENT_SECRET is missing.");
   }
-  // Coupling (fail-closed): the DingTalk gate only covers human surfaces (page
-  // HTML + /ws). The agent/data surfaces (state API, /pages list, /rooms,
-  // long-poll) are token-gated. If the login gate were on while the token gate
-  // was off, those surfaces would leave every "protected" page's live data
-  // readable/writable/enumerable by anyone (incl. cross-origin via `*` CORS).
-  // So when DingTalk is enabled, an API token is REQUIRED.
-  if (dingtalkEnabled && !apiToken) {
-    throw new Error(
-      "DINGTALK_CLIENT_ID is set but LIVEHTML_API_TOKEN is missing — the agent/state surfaces (state API, /pages list, /rooms) would be left open while page HTML is gated. Set LIVEHTML_API_TOKEN so human pages and their data are protected together (fail-closed).",
-    );
-  }
   const ttl = Number(env.SESSION_TTL_SEC);
   return {
     dingtalkEnabled,
@@ -45,6 +35,10 @@ export function loadAuthConfig(env: Record<string, string | undefined>): AuthCon
     baseUrl: (env.LIVEHTML_PUBLIC_BASE_URL || "").trim().replace(/\/+$/, ""),
     sessionSecret,
     sessionTtlSec: Number.isFinite(ttl) && ttl > 0 ? Math.floor(ttl) : 604800,
+    apiTokenTtlSec: (() => {
+      const t = Number(env.API_TOKEN_TTL_SEC);
+      return Number.isFinite(t) && t > 0 ? Math.floor(t) : 2592000;
+    })(),
     apiTokenEnabled: apiToken.length > 0,
     apiToken,
   };

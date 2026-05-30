@@ -13,11 +13,15 @@ test("dingtalk enabled requires session secret (fail closed)", () => {
     .toThrow(/SESSION_SECRET/);
 });
 
-test("dingtalk enabled requires api token (fail closed)", () => {
-  // The login gate covers human surfaces only; without an API token the
-  // agent/state surfaces would be left open. Refuse to start.
-  expect(() => loadAuthConfig({ DINGTALK_CLIENT_ID: "k", DINGTALK_CLIENT_SECRET: "s", SESSION_SECRET: "secret" }))
-    .toThrow(/LIVEHTML_API_TOKEN/);
+test("dingtalk enabled does NOT require api token (per-user tokens suffice)", () => {
+  const c = loadAuthConfig({ DINGTALK_CLIENT_ID: "k", DINGTALK_CLIENT_SECRET: "s", SESSION_SECRET: "secret" });
+  expect(c.dingtalkEnabled).toBe(true);
+  expect(c.apiTokenEnabled).toBe(false);
+});
+
+test("apiTokenTtlSec defaults to 30 days and parses override", () => {
+  expect(loadAuthConfig({}).apiTokenTtlSec).toBe(2592000);
+  expect(loadAuthConfig({ API_TOKEN_TTL_SEC: "3600" }).apiTokenTtlSec).toBe(3600);
 });
 
 test("parses full config", () => {
