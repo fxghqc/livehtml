@@ -15,7 +15,6 @@ const STATE_DIR = join(ROOT, "state");
 const PUBLIC_DIR = join(ROOT, "public");
 const EXAMPLES_DIR = join(ROOT, "examples");
 const SKILL_DIR = join(ROOT, "skill");
-const SCRIPTS_DIR = join(ROOT, "scripts");
 const MAX_HTML_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_WAIT_SEC = 60;
 
@@ -490,13 +489,6 @@ const server = Bun.serve({
       );
     }
 
-    if (path === "/login.ts") {
-      return (
-        (await serveStatic(SCRIPTS_DIR, "livehtml-login.ts", "text/plain; charset=utf-8")) ??
-        new Response("// livehtml-login.ts not found", { status: 404, headers: CORS })
-      );
-    }
-
     if (path.startsWith("/examples/")) {
       const name = path.slice("/examples/".length);
       const ext = name.split(".").pop()?.toLowerCase();
@@ -517,10 +509,11 @@ const server = Bun.serve({
     // /install.ps1          → Windows installer (irm <url>/install.ps1 | iex)
     // /skill/<file>         → raw skill source files (SKILL.md, evals/evals.json, ...)
     //
-    // Both installers drop SKILL.md into every detected agent's global skills
-    // dir (Claude Code / Codex / Cursor — paths per the `skills` ecosystem),
-    // falling back to Claude Code if none is detected, and write the base URL
-    // to <XDG_STATE_HOME|~/.local/state>/livehtml/base-url.
+    // Both installers drop the skill bundle (SKILL.md + scripts/livehtml-login.ts)
+    // into every detected agent's global skills dir (Claude Code / Codex / Cursor
+    // — paths per the `skills` ecosystem), falling back to Claude Code if none is
+    // detected. Runtime config (base-url + optional api-token) goes to
+    // <XDG_STATE_HOME|~/.local/state>/livehtml/, which the skill scripts auto-load.
     if (path === "/install" && req.method === "GET") {
       const base = `${url.protocol}//${url.host}`;
       const script = `#!/bin/sh
@@ -529,16 +522,17 @@ set -e
 BASE="${base}"
 SKILL="livehtml"
 
+# Config/state dir holds ONLY runtime config the skill scripts auto-load:
+# base-url (+ optional api-token). The skill CODE (incl. the login CLI) is
+# bundled into the skill dir below — not here.
 STATE_DIR="\${XDG_STATE_HOME:-$HOME/.local/state}/livehtml"
 mkdir -p "$STATE_DIR"
 printf '%s' "$BASE" > "$STATE_DIR/base-url"
 echo "✓ base URL → $STATE_DIR/base-url"
 
-curl -fsSL "$BASE/login.ts" -o "$STATE_DIR/livehtml-login.ts" 2>/dev/null && \
-  echo "✓ login CLI → $STATE_DIR/livehtml-login.ts (run: bun \$STATE_DIR/livehtml-login.ts)"
-
 if [ -n "\${LIVEHTML_API_TOKEN:-}" ]; then
   printf '%s' "$LIVEHTML_API_TOKEN" > "$STATE_DIR/api-token"
+  chmod 600 "$STATE_DIR/api-token" 2>/dev/null || true
   echo "✓ api token → $STATE_DIR/api-token"
 fi
 
@@ -551,9 +545,10 @@ install_to() {
   # \$1 display name  \$2 agent home  \$3 skills root
   [ -d "$2" ] || return 0
   dest="$3/$SKILL"
-  mkdir -p "$dest"
+  mkdir -p "$dest/scripts"
   curl -fsSL "$BASE/skill/SKILL.md" -o "$dest/SKILL.md"
-  echo "✓ $1 → $dest/SKILL.md"
+  curl -fsSL "$BASE/skill/scripts/livehtml-login.ts" -o "$dest/scripts/livehtml-login.ts" 2>/dev/null || true
+  echo "✓ $1 → $dest (SKILL.md + scripts/livehtml-login.ts)"
   n=$((n + 1))
 }
 
@@ -563,11 +558,13 @@ install_to "Cursor"      "$CURSOR_DIR" "$CURSOR_DIR/skills"
 
 if [ "$n" -eq 0 ]; then
   dest="$CLAUDE_DIR/skills/$SKILL"
-  mkdir -p "$dest"
+  mkdir -p "$dest/scripts"
   curl -fsSL "$BASE/skill/SKILL.md" -o "$dest/SKILL.md"
-  echo "✓ no agent detected; installed for Claude Code → $dest/SKILL.md"
+  curl -fsSL "$BASE/skill/scripts/livehtml-login.ts" -o "$dest/scripts/livehtml-login.ts" 2>/dev/null || true
+  echo "✓ no agent detected; installed for Claude Code → $dest"
 fi
-echo "✓ Done. Restart your agent (Claude Code / Codex / Cursor) to pick up the skill."
+echo "✓ Done. Restart your agent to pick up the skill."
+echo "  Protected deploy? Log in once: bun <skills>/livehtml/scripts/livehtml-login.ts"
 `;
       return new Response(script, {
         headers: { ...CORS, "Content-Type": "text/x-shellscript; charset=utf-8" },
@@ -586,8 +583,6 @@ New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
 [System.IO.File]::WriteAllText((Join-Path $StateDir 'base-url'), $Base)
 Write-Host "[ok] base URL -> $StateDir/base-url"
 
-try { Invoke-WebRequest -Uri "$Base/login.ts" -OutFile (Join-Path $StateDir 'livehtml-login.ts') -UseBasicParsing; Write-Host "[ok] login CLI -> $StateDir/livehtml-login.ts (run: bun $StateDir/livehtml-login.ts)" } catch {}
-
 if ($env:LIVEHTML_API_TOKEN) {
   [System.IO.File]::WriteAllText((Join-Path $StateDir 'api-token'), $env:LIVEHTML_API_TOKEN)
   Write-Host "[ok] api token -> $StateDir/api-token"
@@ -604,23 +599,28 @@ $targets = @(
 )
 
 $md = (Invoke-WebRequest -Uri "$Base/skill/SKILL.md" -UseBasicParsing).Content
+$login = $null
+try { $login = (Invoke-WebRequest -Uri "$Base/skill/scripts/livehtml-login.ts" -UseBasicParsing).Content } catch {}
+function Install-Skill($dest) {
+  New-Item -ItemType Directory -Force -Path (Join-Path $dest 'scripts') | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $dest 'SKILL.md'), $md)
+  if ($login) { [System.IO.File]::WriteAllText((Join-Path (Join-Path $dest 'scripts') 'livehtml-login.ts'), $login) }
+}
 $n = 0
 foreach ($t in $targets) {
   if (Test-Path $t.home) {
     $dest = Join-Path $t.skills $Skill
-    New-Item -ItemType Directory -Force -Path $dest | Out-Null
-    [System.IO.File]::WriteAllText((Join-Path $dest 'SKILL.md'), $md)
-    Write-Host "[ok] $($t.name) -> $dest"
+    Install-Skill $dest
+    Write-Host "[ok] $($t.name) -> $dest (SKILL.md + scripts/livehtml-login.ts)"
     $n++
   }
 }
 if ($n -eq 0) {
   $dest = Join-Path (Join-Path $claude 'skills') $Skill
-  New-Item -ItemType Directory -Force -Path $dest | Out-Null
-  [System.IO.File]::WriteAllText((Join-Path $dest 'SKILL.md'), $md)
+  Install-Skill $dest
   Write-Host "[ok] no agent detected; Claude Code -> $dest"
 }
-Write-Host "Done. Restart your agent (Claude Code / Codex / Cursor) to pick up the skill."
+Write-Host "Done. Restart your agent. Protected deploy? Run: bun <skills>/livehtml/scripts/livehtml-login.ts"
 `;
       return new Response(script, {
         headers: { ...CORS, "Content-Type": "text/plain; charset=utf-8" },

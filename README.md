@@ -193,11 +193,13 @@ LIVEHTML_API_TOKEN=       # 可选（CI/应急）：静态共享令牌；agent �
 开了钉钉登录门后，agent 不用 operator 手发密钥——跑一次：
 
 ```bash
-bun ~/.local/state/livehtml/livehtml-login.ts    # 或 livehtml-login
+bun ~/.claude/skills/livehtml/scripts/livehtml-login.ts    # 脚本随 skill 安装；或用 livehtml-login
 ```
 
-浏览器扫码登录 → 个人签名 token 自动写入 `~/.local/state/livehtml/api-token`，
-约月级到期前自动静默续期。`LIVEHTML_API_TOKEN`（静态共享密钥）仅作 CI/应急可选项。
+脚本作为 skill 的一部分随 SKILL.md 一起安装（`<skills>/livehtml/scripts/`）；运行时**自动从
+`~/.local/state/livehtml/` 读取 `base-url`（和已有的 `api-token`）**，无需 `--base`。
+浏览器扫码登录 → 个人签名 token 自动写入 `~/.local/state/livehtml/api-token`，约月级到期前自动
+静默续期。`LIVEHTML_API_TOKEN`（静态共享密钥）仅作 CI/应急可选项。
 
 ```bash
 # ---- agent 接口 API token 门（留空即关闭）----

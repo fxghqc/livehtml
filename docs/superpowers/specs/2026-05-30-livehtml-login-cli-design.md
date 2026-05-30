@@ -55,13 +55,15 @@ The token is handed to the CLI by redirecting the browser to a localhost URL. If
 
 ## 6. CLI: `livehtml login`
 
-- **Runtime:** Bun + TypeScript, zero-dependency (`scripts/livehtml-login.ts`, run with `bun`), consistent with the Bun/TS server and tests. Uses `node:http`/`node:crypto`/`node:child_process`/`node:fs` (Bun-compatible) + the global `fetch` for refresh.
+- **Runtime:** Bun + TypeScript, zero-dependency, run with `bun`. Uses `node:http`/`node:crypto`/`node:child_process`/`node:fs` (Bun-compatible) + the global `fetch` for refresh.
+- **Location (skill spec):** the script is **part of the skill bundle** at `skill/scripts/livehtml-login.ts`, so it installs *with* SKILL.md into the agent's skills dir (`<skills>/livehtml/scripts/livehtml-login.ts`). It is NOT placed in the state/config dir. **Code lives in the skill; config/state lives in `~/.local/state/livehtml/`.**
+- **Auto-load config:** the script reads `base-url` (and the existing `api-token`) from `~/.local/state/livehtml/` automatically regardless of where it is executed from — `--base`/`LIVEHTML_BASE_URL` are optional overrides only.
 - **Resolve base URL:** from `~/.local/state/livehtml/base-url` (or `--base`/`LIVEHTML_BASE_URL`).
 - **Flow:**
   1. If a valid cached token exists and is >N days from expiry → print "already logged in as <name>" and exit. If valid but near expiry → try `POST /auth/token/refresh` (no browser); on success, save + exit.
   2. Else: bind `127.0.0.1:0`; build `cliNonce`; open the browser (`open`/`xdg-open`/`start`, with a printed fallback URL) to `"$BASE/auth/dingtalk/login?next=" + enc("/auth/token?cli=" + enc("http://127.0.0.1:PORT/cb") + "&n=" + cliNonce)`.
   3. The one-shot `/cb` handler validates the `n` nonce, reads `token`/`name`/`exp`, writes `~/.local/state/livehtml/api-token` (mode 600), prints `✓ logged in as <name> (expires <date>)`, returns a "✓ 你可以关闭这个标签页" HTML page, and exits 0. Timeout → exit non-zero with guidance.
-- **Distribution:** the server serves the script at `GET /login.ts` and the `/install` script additionally fetches it to `$STATE_DIR/livehtml-login.ts` and prints `bun …` as the run command. `package.json` gains a `livehtml-login` bin (Bun shebang).
+- **Distribution:** the script ships inside the skill (`skill/scripts/`), served via the existing `/skill/<file>` static route (`GET /skill/scripts/livehtml-login.ts`). Both installers (`/install`, `/install.ps1`, and `install-skill.cjs`'s recursive copy) place it next to SKILL.md in each agent's skills dir. `package.json` gains a `livehtml-login` bin → `./skill/scripts/livehtml-login.ts` (Bun shebang).
 - **Agent usage afterward (unchanged surface):** read `~/.local/state/livehtml/api-token`, send `Authorization: Bearer <token>`. SKILL.md updated to say "run `livehtml login` once" instead of hand-copying.
 
 ## 7. Supersedes / migration
