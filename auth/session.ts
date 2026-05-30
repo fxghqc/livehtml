@@ -84,3 +84,15 @@ export function buildSetCookie(
   if (opts.secure) bits.push("Secure");
   return bits.join("; ");
 }
+
+export const API_TOKEN_KIND = "api";
+
+export function signApiToken(uid: string, name: string, ttlSec: number, secret: string, nowSec: number): string {
+  return signToken({ uid, name, kind: API_TOKEN_KIND, exp: nowSec + ttlSec }, secret);
+}
+
+export function verifyApiToken(token: string, secret: string, nowSec: number): { uid: string; name: string } | null {
+  const v = verifyToken<any>(token, secret, nowSec);
+  if (!v || v.kind !== API_TOKEN_KIND || typeof v.uid !== "string") return null;
+  return { uid: v.uid, name: typeof v.name === "string" ? v.name : v.uid };
+}

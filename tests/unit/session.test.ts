@@ -60,3 +60,26 @@ test("buildSetCookie sets flags; Secure only when asked", () => {
   const secure = buildSetCookie("lh_sess", "v", { ttlSec: 60, path: "/", secure: true });
   expect(secure).toContain("Secure");
 });
+
+import { signApiToken, verifyApiToken } from "../../auth/session.ts";
+
+test("signApiToken/verifyApiToken roundtrip", () => {
+  const t = signApiToken("u1", "Alice", 100, SECRET, NOW);
+  const v = verifyApiToken(t, SECRET, NOW);
+  expect(v).toEqual({ uid: "u1", name: "Alice" });
+});
+
+test("verifyApiToken rejects expired", () => {
+  const t = signApiToken("u1", "Alice", -1, SECRET, NOW);
+  expect(verifyApiToken(t, SECRET, NOW)).toBeNull();
+});
+
+test("verifyApiToken rejects a session token (wrong kind)", () => {
+  const sess = signSession({ uid: "u1", name: "Alice", exp: NOW + 100 }, SECRET);
+  expect(verifyApiToken(sess, SECRET, NOW)).toBeNull();
+});
+
+test("verifyApiToken rejects wrong secret", () => {
+  const t = signApiToken("u1", "Alice", 100, SECRET, NOW);
+  expect(verifyApiToken(t, "other", NOW)).toBeNull();
+});
