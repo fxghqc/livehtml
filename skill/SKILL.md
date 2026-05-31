@@ -223,18 +223,19 @@ done
 
 ## 可视化（可选·进阶）：图表 / 表格 / 关系图
 
-数据多的页面，单文件里直接 CDN 引一个库即可，**无需构建**。看相（配色/排版/动效）交给 `frontend-design` skill，这里只管「画什么」。
-**优先用「声明式 / 文本驱动」的库** —— agent 写 JSON/文本比手写命令式绘图代码可靠得多。图表元素照常可加 `data-live`（如多人同步「当前视图/筛选」）。下面的库均已核实在活跃维护。
+数据多的页面，单文件里直接 CDN 引库即可，**无需构建**。图表元素照常可加 `data-live`（如多人同步「当前视图/筛选」）。下面的库均已核实活跃维护。
 
-- **通用图表**：[ECharts](https://github.com/apache/echarts)（默认首选，最全）· [Chart.js](https://github.com/chartjs/Chart.js)（轻量 canvas）· [Plotly.js](https://github.com/plotly/plotly.js)（科学/统计/3D）· [ApexCharts](https://github.com/apexcharts/apexcharts.js)（交互漂亮直观）· [charts.css](https://github.com/ChartsCSS/charts.css)（纯 CSS，零 JS，最适合简单条/线）
-- **声明式（agent 友好，推荐）**：[Vega-Lite](https://github.com/vega/vega-lite)（JSON 描述图表）· [Mermaid](https://github.com/mermaid-js/mermaid)（文本→流程图/时序/甘特，CDN 一行）· [D2](https://github.com/terrastruct/d2)（更复杂的图；浏览器用 wasm 版）
+**首选：能直接用 SVG / Canvas 画，就直接画。** 自定义图示、流程/架构图、简单的条/线/进度、徽标式小图，手写 inline `<svg>`（或 canvas）通常比上库更好看、更可控、零依赖 —— 配色、排版、留白都由你精确掌控。只有当数据量大、需要标准交互、或是成套统计图时，才上下面的库。
+
+- **通用图表**：[Chart.js](https://github.com/chartjs/Chart.js)（**首选**，简洁好看，canvas）· [ECharts](https://github.com/apache/echarts)（最全，复杂场景）· [Plotly.js](https://github.com/plotly/plotly.js)（科学/统计/3D）· [ApexCharts](https://github.com/apexcharts/apexcharts.js)（交互漂亮）· [charts.css](https://github.com/ChartsCSS/charts.css)（纯 CSS，零 JS，最适合简单条/线）
+- **声明式（数据分析图，agent 写 JSON 即可）**：[Vega-Lite](https://github.com/vega/vega-lite)
 - **时序**：[uPlot](https://github.com/leeoniya/uPlot)（小而快）· [lightweight-charts](https://github.com/tradingview/lightweight-charts)（金融）
 - **表格 / 数据网格**：[Grid.js](https://github.com/grid-js/gridjs)（简单，排序/搜索/分页）· [RevoGrid](https://github.com/revolist/revogrid)（高性能可编辑，Excel 模式）· [Jspreadsheet CE](https://github.com/jspreadsheet/ce) · [AntV S2](https://github.com/antvis/S2)（透视表）
-- **关系图 / 流程 / 网络**：[AntV G6](https://github.com/antvis/G6) / [X6](https://github.com/antvis/X6) · [Cytoscape.js](https://github.com/cytoscape/cytoscape.js) · [3d-force-graph](https://github.com/vasturiano/3d-force-graph)（GoJS 也强，但**商业授权**）
+- **关系图 / 流程 / 网络**：静态/自定义流程图、架构图**优先直接画 SVG**（最好看、最可控）；要自动布局或可交互的大图再上 [AntV G6](https://github.com/antvis/G6) / [X6](https://github.com/antvis/X6) · [Cytoscape.js](https://github.com/cytoscape/cytoscape.js) · [3d-force-graph](https://github.com/vasturiano/3d-force-graph)。（Mermaid 能用文本快速出图，但样式一般、不够精致，**别作首选**；GoJS 强但**商业授权**。）
 - **甘特 / 时间线**：[Frappe Gantt](https://github.com/frappe/gantt) · [vis-timeline](https://github.com/visjs/vis-timeline)
 - **大 / 流数据**：[Perspective](https://github.com/perspective-dev/perspective)（web-component，高性能）
 
-最稳的做法：把数据塞进 ECharts `option` 或 Vega-Lite JSON；流程/架构图直接写 Mermaid 文本，让库去渲染。
+一句话：自定义图示 / 流程 / 架构图 → **手写 SVG**；成套数据图 → Chart.js / ECharts；大数据分析 → Vega-Lite / Perspective。
 
 ## 动画（可选·进阶）
 
