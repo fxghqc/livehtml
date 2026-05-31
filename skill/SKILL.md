@@ -221,11 +221,15 @@ done
 > provenance); with the gate off it's an opaque connection label — only treat
 > it as identity on a protected deployment.
 
+> **页面好看 = 主体设计 + 内容工具。** 整页的布局 / 排版 / 配色 / 风格（**主体设计**）交给 [`frontend-design`](https://github.com/anthropics/skills/tree/main/skills/frontend-design) skill；livehtml 只管实时状态与托管。下面三节（可视化 / 3D / 动画）是**可选·进阶**的内容工具——基础页面（`data-live` + 一行 `<script>`）一概不需要。
+
 ## 可视化（可选·进阶）：图表 / 表格 / 关系图
 
 数据多的页面，单文件里直接 CDN 引库即可，**无需构建**。图表元素照常可加 `data-live`（如多人同步「当前视图/筛选」）。下面的库均已核实活跃维护。
 
 **首选：能直接用 SVG / Canvas 画，就直接画。** 自定义图示、流程/架构图、简单的条/线/进度、徽标式小图，手写 inline `<svg>`（或 canvas）通常比上库更好看、更可控、零依赖 —— 配色、排版、留白都由你精确掌控。只有当数据量大、需要标准交互、或是成套统计图时，才上下面的库。
+
+想要**生成式 / 粒子 / 自定义交互 / 动态 canvas** 图形（比手写 canvas 省力）：[p5.js](https://github.com/processing/p5.js)（创意编程，最易上手）· [konva](https://github.com/konvajs/konva)（可交互 2D canvas，拖拽图元/自定义编辑器）· [Pixi.js](https://github.com/pixijs/pixijs)（2D WebGL，海量元素/高性能）· [Rough.js](https://github.com/rough-stuff/rough)（手绘风，稳定但维护放缓）· [two.js](https://github.com/jonobr1/two.js)。深度生成艺术可配合 `algorithmic-art` skill。
 
 - **通用图表**：[Chart.js](https://github.com/chartjs/Chart.js)（**首选**，简洁好看，canvas）· [ECharts](https://github.com/apache/echarts)（最全，复杂场景）· [Plotly.js](https://github.com/plotly/plotly.js)（科学/统计/3D）· [ApexCharts](https://github.com/apexcharts/apexcharts.js)（交互漂亮）· [charts.css](https://github.com/ChartsCSS/charts.css)（纯 CSS，零 JS，最适合简单条/线）
 - **声明式（数据分析图，agent 写 JSON 即可）**：[Vega-Lite](https://github.com/vega/vega-lite)
@@ -237,9 +241,19 @@ done
 
 一句话：自定义图示 / 流程 / 架构图 → **手写 SVG**；成套数据图 → Chart.js / ECharts；大数据分析 → Vega-Lite / Perspective。
 
+## 3D（可选·进阶）
+
+需要 3D 时，单文件优先选「声明式 / 一个标签」的（均已核实活跃）：
+- **[model-viewer](https://github.com/google/model-viewer)** —— ⭐ 一个 `<model-viewer src="x.glb">` 标签即可展示 glTF 模型，最省事。
+- **[A-Frame](https://github.com/aframevr/aframe)** —— 用 HTML 标签（`<a-scene>`）写 3D/VR 场景，声明式、agent 友好。
+- **[Three.js](https://github.com/mrdoob/three.js)** —— 事实标准，完全控制（112k★）；[Babylon.js](https://github.com/BabylonJS/Babylon.js) / [PlayCanvas](https://github.com/playcanvas/engine) 为更完整的引擎。
+- **[deck.gl](https://github.com/visgl/deck.gl)** —— 地理 / 大数据 WebGL 图层（地图上叠加海量数据）。
+
+3D 较重、对单文件报告页是少数场景，确有需要再上。
+
 ## 动画（可选·进阶）
 
-单文件 CDN 即可，**能用 CSS 就别上库** —— frontend-design 推荐的「一次编排好的入场动画（staggered `animation-delay`）」纯 CSS 就够。需要 JS 时（均已核实活跃）：
+单文件 CDN 即可，**能用 CSS 就别上库** —— 一次编排好的入场动画（staggered `animation-delay`）纯 CSS 就够。需要 JS 时（均已核实活跃）：
 
 - **[auto-animate](https://github.com/formkit/auto-animate)** —— ⭐ 最贴合 livehtml：零配置，自动给 DOM 增删/重排加过渡。多人实时同步的列表/卡片出现、重排时直接顺滑，一行接入。
 - **[Motion](https://github.com/motiondivision/motion)** —— 现代首选，vanilla `animate()` API（已**取代**归档的 Motion One / Popmotion / Framer Motion）。
