@@ -221,7 +221,7 @@ done
 > provenance); with the gate off it's an opaque connection label — only treat
 > it as identity on a protected deployment.
 
-> **页面好看 = 主体设计 + 内容工具。** 整页的布局 / 排版 / 配色 / 风格（**主体设计**）是 livehtml 之外的事——它只管实时状态与托管。**装了相关 skill 就顺手用，没装也别强求**（直接写好 HTML 即可）：[`frontend-design`](https://github.com/anthropics/skills/tree/main/skills/frontend-design)（主体设计 / 创意方向）、[`web-design-guidelines`](https://github.com/vercel-labs/agent-skills)（Vercel，查无障碍 / 正确性）。下面三节（可视化 / 3D / 动画）是**可选·进阶**的内容工具——基础页面（`data-live` + 一行 `<script>`）一概不需要。
+> **整页主体设计（布局 / 排版 / 配色 / 风格）也值得做好。** 这块 livehtml 暂未内置专门指引——可以借鉴现成 skill（**装了就顺手用，没装也别强求**，直接写好 HTML 即可）：[`frontend-design`](https://github.com/anthropics/skills/tree/main/skills/frontend-design)（创意方向）、[`web-design-guidelines`](https://github.com/vercel-labs/agent-skills)（Vercel，无障碍 / 正确性）。下面三节（可视化 / 3D / 动画）是**可选·进阶**的内容工具——基础页面（`data-live` + 一行 `<script>`）一概不需要。
 
 ## 可视化（可选·进阶）：图表 / 表格 / 关系图
 
