@@ -221,7 +221,7 @@ done
 > provenance); with the gate off it's an opaque connection label — only treat
 > it as identity on a protected deployment.
 
-> **页面好看 = 主体设计 + 内容工具。** 整页的布局 / 排版 / 配色 / 风格（**主体设计**）交给 [`frontend-design`](https://github.com/anthropics/skills/tree/main/skills/frontend-design) skill；livehtml 只管实时状态与托管。下面三节（可视化 / 3D / 动画）是**可选·进阶**的内容工具——基础页面（`data-live` + 一行 `<script>`）一概不需要。
+> **页面好看 = 主体设计 + 内容工具。** 整页的布局 / 排版 / 配色 / 风格（**主体设计**）是 livehtml 之外的事——它只管实时状态与托管。**装了相关 skill 就顺手用，没装也别强求**（直接写好 HTML 即可）：[`frontend-design`](https://github.com/anthropics/skills/tree/main/skills/frontend-design)（主体设计 / 创意方向）、[`web-design-guidelines`](https://github.com/vercel-labs/agent-skills)（Vercel，查无障碍 / 正确性）。下面三节（可视化 / 3D / 动画）是**可选·进阶**的内容工具——基础页面（`data-live` + 一行 `<script>`）一概不需要。
 
 ## 可视化（可选·进阶）：图表 / 表格 / 关系图
 
@@ -229,7 +229,7 @@ done
 
 **首选：能直接用 SVG / Canvas 画，就直接画。** 自定义图示、流程/架构图、简单的条/线/进度、徽标式小图，手写 inline `<svg>`（或 canvas）通常比上库更好看、更可控、零依赖 —— 配色、排版、留白都由你精确掌控。只有当数据量大、需要标准交互、或是成套统计图时，才上下面的库。
 
-想要**生成式 / 粒子 / 自定义交互 / 动态 canvas** 图形（比手写 canvas 省力）：[p5.js](https://github.com/processing/p5.js)（创意编程，最易上手）· [konva](https://github.com/konvajs/konva)（可交互 2D canvas，拖拽图元/自定义编辑器）· [Pixi.js](https://github.com/pixijs/pixijs)（2D WebGL，海量元素/高性能）· [Rough.js](https://github.com/rough-stuff/rough)（手绘风，稳定但维护放缓）· [two.js](https://github.com/jonobr1/two.js)。深度生成艺术可配合 `algorithmic-art` skill。
+想要**生成式 / 粒子 / 自定义交互 / 动态 canvas** 图形（比手写 canvas 省力）：[p5.js](https://github.com/processing/p5.js)（创意编程，最易上手）· [konva](https://github.com/konvajs/konva)（可交互 2D canvas，拖拽图元/自定义编辑器）· [Pixi.js](https://github.com/pixijs/pixijs)（2D WebGL，海量元素/高性能）· [Rough.js](https://github.com/rough-stuff/rough)（手绘风，稳定但维护放缓）· [two.js](https://github.com/jonobr1/two.js)。深度生成艺术装了 `algorithmic-art` skill 就用，没有也能直接写 p5.js。
 
 - **通用图表**：[Chart.js](https://github.com/chartjs/Chart.js)（**首选**，简洁好看，canvas）· [ECharts](https://github.com/apache/echarts)（最全，复杂场景）· [Plotly.js](https://github.com/plotly/plotly.js)（科学/统计/3D）· [ApexCharts](https://github.com/apexcharts/apexcharts.js)（交互漂亮）· [charts.css](https://github.com/ChartsCSS/charts.css)（纯 CSS，零 JS，最适合简单条/线）
 - **声明式（数据分析图，agent 写 JSON 即可）**：[Vega-Lite](https://github.com/vega/vega-lite)
