@@ -7,7 +7,7 @@
   "private": true,
   "bin": {
     "livehtml-skill": "./scripts/install-skill.cjs",
-    "livehtml-login": "./skill/scripts/livehtml-login.ts"
+    "livehtml": "./skill/scripts/livehtml.ts"
   },
   "files": [
     "skill",

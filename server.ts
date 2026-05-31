@@ -509,7 +509,7 @@ const server = Bun.serve({
     // /install.ps1          → Windows installer (irm <url>/install.ps1 | iex)
     // /skill/<file>         → raw skill source files (SKILL.md, evals/evals.json, ...)
     //
-    // Both installers drop the skill bundle (SKILL.md + scripts/livehtml-login.ts)
+    // Both installers drop the skill bundle (SKILL.md + scripts/livehtml.ts)
     // into every detected agent's global skills dir (Claude Code / Codex / Cursor
     // — paths per the `skills` ecosystem), falling back to Claude Code if none is
     // detected. Runtime config (base-url + optional api-token) goes to
@@ -547,8 +547,8 @@ install_to() {
   dest="$3/$SKILL"
   mkdir -p "$dest/scripts"
   curl -fsSL "$BASE/skill/SKILL.md" -o "$dest/SKILL.md"
-  curl -fsSL "$BASE/skill/scripts/livehtml-login.ts" -o "$dest/scripts/livehtml-login.ts" 2>/dev/null || true
-  echo "✓ $1 → $dest (SKILL.md + scripts/livehtml-login.ts)"
+  curl -fsSL "$BASE/skill/scripts/livehtml.ts" -o "$dest/scripts/livehtml.ts" 2>/dev/null || true
+  echo "✓ $1 → $dest (SKILL.md + scripts/livehtml.ts)"
   n=$((n + 1))
 }
 
@@ -560,11 +560,11 @@ if [ "$n" -eq 0 ]; then
   dest="$CLAUDE_DIR/skills/$SKILL"
   mkdir -p "$dest/scripts"
   curl -fsSL "$BASE/skill/SKILL.md" -o "$dest/SKILL.md"
-  curl -fsSL "$BASE/skill/scripts/livehtml-login.ts" -o "$dest/scripts/livehtml-login.ts" 2>/dev/null || true
+  curl -fsSL "$BASE/skill/scripts/livehtml.ts" -o "$dest/scripts/livehtml.ts" 2>/dev/null || true
   echo "✓ no agent detected; installed for Claude Code → $dest"
 fi
 echo "✓ Done. Restart your agent to pick up the skill."
-echo "  Protected deploy? Log in once: bun <skills>/livehtml/scripts/livehtml-login.ts"
+echo "  Protected deploy? Log in once: bun <skills>/livehtml/scripts/livehtml.ts login"
 `;
       return new Response(script, {
         headers: { ...CORS, "Content-Type": "text/x-shellscript; charset=utf-8" },
@@ -600,18 +600,18 @@ $targets = @(
 
 $md = (Invoke-WebRequest -Uri "$Base/skill/SKILL.md" -UseBasicParsing).Content
 $login = $null
-try { $login = (Invoke-WebRequest -Uri "$Base/skill/scripts/livehtml-login.ts" -UseBasicParsing).Content } catch {}
+try { $login = (Invoke-WebRequest -Uri "$Base/skill/scripts/livehtml.ts" -UseBasicParsing).Content } catch {}
 function Install-Skill($dest) {
   New-Item -ItemType Directory -Force -Path (Join-Path $dest 'scripts') | Out-Null
   [System.IO.File]::WriteAllText((Join-Path $dest 'SKILL.md'), $md)
-  if ($login) { [System.IO.File]::WriteAllText((Join-Path (Join-Path $dest 'scripts') 'livehtml-login.ts'), $login) }
+  if ($login) { [System.IO.File]::WriteAllText((Join-Path (Join-Path $dest 'scripts') 'livehtml.ts'), $login) }
 }
 $n = 0
 foreach ($t in $targets) {
   if (Test-Path $t.home) {
     $dest = Join-Path $t.skills $Skill
     Install-Skill $dest
-    Write-Host "[ok] $($t.name) -> $dest (SKILL.md + scripts/livehtml-login.ts)"
+    Write-Host "[ok] $($t.name) -> $dest (SKILL.md + scripts/livehtml.ts)"
     $n++
   }
 }
@@ -620,7 +620,7 @@ if ($n -eq 0) {
   Install-Skill $dest
   Write-Host "[ok] no agent detected; Claude Code -> $dest"
 }
-Write-Host "Done. Restart your agent. Protected deploy? Run: bun <skills>/livehtml/scripts/livehtml-login.ts"
+Write-Host "Done. Restart your agent. Protected deploy? Run: bun <skills>/livehtml/scripts/livehtml.ts login"
 `;
       return new Response(script, {
         headers: { ...CORS, "Content-Type": "text/plain; charset=utf-8" },

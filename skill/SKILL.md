@@ -7,22 +7,28 @@ description: Use livehtml to publish an agent-generated HTML page that has persi
 
 A deployed service that **hosts HTML files + provides real-time multi-user state**. One URL gets the team a shared interactive page; any element with `data-live="key"` automatically syncs across browsers.
 
-## Setup — load the base URL
+## 用法：`livehtml` CLI（推荐）
 
-Every command below uses `$LIVEHTML_BASE_URL`. Load it once per shell:
-
-```bash
-export LIVEHTML_BASE_URL=$(cat ~/.local/state/livehtml/base-url)
-```
-
-If that file is missing (installed from source, or never configured), create it with your deployment URL, then re-run the line above:
+skill 自带一个 `livehtml` CLI（`scripts/livehtml.ts`，需 Bun），**自动从 `~/.local/state/livehtml/` 读取 base-url + token（token 自动续期）**——不用 export 环境变量、不用手动拼 `Authorization` 头。
 
 ```bash
-mkdir -p ~/.local/state/livehtml
-echo 'http://your-livehtml-host:port' > ~/.local/state/livehtml/base-url
+livehtml <子命令>            # 装了 bin 时
+bun ~/.claude/skills/livehtml/scripts/livehtml.ts <子命令>   # 通用（路径随 agent 而定）
 ```
 
-> If `$LIVEHTML_BASE_URL` is empty, **stop** and do the setup — every `curl` and `<script src>` below depends on it.
+| 命令 | 作用 |
+|---|---|
+| `livehtml login` | 受保护部署登录一次（钉钉扫码，拿/续期个人 token） |
+| `livehtml put <key> <file> [--public]` | 上传 HTML 页面 → `…/pages/<key>` 立即可分享（`<file>` 用 `-` 读 stdin） |
+| `livehtml get <key>` | 读回该页状态 (JSON) |
+| `livehtml set <key> '<json>'` | 整体写入该页状态 |
+| `livehtml watch <key>` | 阻塞至下次有人改动（最多 60s，省掉 `sleep` 轮询） |
+| `livehtml ls` / `livehtml rm <key>` | 列出 / 删除页面 |
+| `livehtml status` | 显示 base-url / 登录状态 |
+
+`<key>` 可含 `/` 做层级（如 `aura/report`）。base-url 由安装器写入 `~/.local/state/livehtml/base-url`；从源码用时可手建该文件，或给任意命令加 `--base http://your-host:port`。
+
+> 下文的 `curl …$LIVEHTML_BASE_URL…` 是**等价的原始 HTTP**（无 Bun、或想看底层时用）；用原始 curl 才需要 `export LIVEHTML_BASE_URL=$(cat ~/.local/state/livehtml/base-url)`，受保护部署再加 `-H "Authorization: Bearer $(cat ~/.local/state/livehtml/api-token)"`。CLI 这些都自动处理。
 
 ## When this skill saves the day
 
@@ -32,44 +38,41 @@ echo 'http://your-livehtml-host:port' > ~/.local/state/livehtml/base-url
 - "A page where each of us picks our preferred time slot"
 - "Make this analysis interactive — let people annotate"
 
-## The two-step workflow
+## 两步走
 
-1. **Write HTML** that includes the script tag and `data-live` attributes (template below)
-2. **PUT it** to `/pages/<key>`. The URL `$LIVEHTML_BASE_URL/pages/<key>` is now live and shareable.
+1. **写 HTML**：加 `data-live` 属性 + 一行 `<script src="/sync.js">`（**相对路径**即可——页面与 sync.js 同源，无需写死 base-url）。
+2. **`livehtml put <key> page.html`** → `…/pages/<key>` 立即可分享。
 
-That's it. No build step, no config, no MinIO access needed.
+无构建、无配置、无需碰 MinIO。
 
-## Minimum HTML boilerplate
+## 最小 HTML 模板
 
-The `<script>` tag is the entire integration — no `<meta>` tags, no init code, no manual room id. Generate the file so `$LIVEHTML_BASE_URL` expands into the script src (a heredoc does this):
+`<script>` 标签就是全部接入 —— 不用 `<meta>`、不用初始化、不用手填 room id：
 
 ```bash
-cat > page.html <<EOF
+cat > page.html <<'EOF'
 <!doctype html>
 <html lang="zh">
 <head><meta charset="utf-8"><title>your title</title></head>
 <body>
 
-  <!-- mark anything you want synced with data-live="<unique-key>" -->
+  <!-- 任何要同步的元素加 data-live="<唯一key>" -->
   <input type="checkbox" data-live="task-1"> 任务一
   <textarea data-live="notes"></textarea>
 
-  <script src="$LIVEHTML_BASE_URL/sync.js"></script>
+  <script src="/sync.js"></script>
 </body>
 </html>
 EOF
+
+livehtml put my/page page.html        # 上传，URL = …/pages/my/page
 ```
 
-The served HTML must contain the **literal** resolved URL in `src` — browsers don't expand shell variables.
+`<script src="/sync.js">` 用相对路径，浏览器会解析成页面同源的地址，所以 HTML 里不用出现 base-url；用绝对地址 `$LIVEHTML_BASE_URL/sync.js` 也行。
 
-**Why no meta tag for room id**: when the page is served at `/pages/foo/bar`, sync.js reads `location.pathname` and derives the room id automatically. URL = MinIO key = state room — one identifier for everything.
+**为什么 room id 不用 meta**：页面在 `/pages/foo/bar` 提供时，sync.js 用 `location.pathname` 自动推导 room id。URL = MinIO key = state room，一个标识贯穿。
 
-## Upload
-
-```bash
-curl -X PUT --data-binary @page.html \
-  $LIVEHTML_BASE_URL/pages/<key>
-```
+> 原始 HTTP 等价：`curl -X PUT --data-binary @page.html $LIVEHTML_BASE_URL/pages/<key>`（受保护部署再加 Bearer 头）。
 
 - `<key>` can include `/` for hierarchy (e.g. `team-x/2026-05-22/standup`)
 - Use stable, descriptive keys — they show up in the URL the team will see
@@ -106,9 +109,9 @@ works.
 All three cookbooks use `-A "livehtml-agent-readback/1"` so the server access
 log can distinguish agent read-backs from browser traffic. Keep it.
 
-> On a protected deployment (登录/令牌门已开), every read-back call below also needs
-> `-H "Authorization: Bearer $(cat ~/.local/state/livehtml/api-token)"` — run `livehtml-login`
-> once first (see 受保护部署 below). Unprotected deployments need neither.
+> 简单做法：用 CLI —— `livehtml get <key>`（读回）、`livehtml watch <key>`（长轮询），自动带凭证。
+> 下面的 `curl` 是等价原始 HTTP；受保护部署用 curl 时才要先 `livehtml login`，并加
+> `-H "Authorization: Bearer $(cat ~/.local/state/livehtml/api-token)"`。未开门的部署都不需要。
 
 ### Cookbook 1 — read one page's state
 
@@ -273,16 +276,12 @@ done
 
 若部署启用了登录/令牌保护：
 
-- **Agent 一次性登录拿令牌**：运行本 skill 自带的 `scripts/livehtml-login.ts`（与本 SKILL.md 同目录），
-  例如 `bun ~/.claude/skills/livehtml/scripts/livehtml-login.ts`（路径随 agent 而定；或用 `livehtml-login`）。
-  脚本**自动从 `~/.local/state/livehtml/` 读取 base-url**，无需传参。
-  浏览器扫码登录钉钉后，个人 API token 自动写入 `~/.local/state/livehtml/api-token`（自动续期，约月级才再扫一次）。
-  之后所有 `PUT /pages/<key>`、`GET/PUT/DELETE /pages/<key>/state`、`/state/<room>`、`/rooms` 请求带头：
-  `Authorization: Bearer $(cat ~/.local/state/livehtml/api-token)`
-  未启用登录/令牌的部署无需此步（向后兼容）。
-- **公开某个页面**（免登浏览）：上传时加头 `X-Public: 1`：
-  `curl -fsS -X PUT -H "X-Public: 1" --data-binary @page.html "$BASE/pages/<key>"`
-  默认（不带该头）页面为受保护，需钉钉登录后才能查看。
+- **Agent 一次性登录**：`livehtml login`（即 `bun ~/.claude/skills/livehtml/scripts/livehtml.ts login`，路径随 agent 而定）。
+  浏览器扫码登录钉钉 → 个人 API token 自动写入 `~/.local/state/livehtml/api-token`（自动续期，约月级才再扫一次）。
+  **之后所有 `livehtml` 命令自动带 token，无需手动加 header**。未启用登录/令牌的部署连这步都不用（向后兼容）。
+  （只有用原始 `curl` 时才需手动加 `-H "Authorization: Bearer $(cat ~/.local/state/livehtml/api-token)"`。）
+- **公开某个页面**（免登浏览）：上传时加 `--public` —— `livehtml put <key> page.html --public`。
+  默认（不加）页面为受保护，需钉钉登录后才能查看。
 - **人类查看者**：受保护页面在浏览器打开时会跳转钉钉扫码登录，仅本企业成员可访问；`by`/在线名单显示其真实姓名。生成的 HTML 无需任何改动。
 
 ## 在线身份（可选·进阶）：按连接（clientId）还是按用户（userId）
