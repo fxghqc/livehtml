@@ -221,6 +221,33 @@ done
 > provenance); with the gate off it's an opaque connection label — only treat
 > it as identity on a protected deployment.
 
+## 可视化（可选·进阶）：图表 / 表格 / 关系图
+
+数据多的页面，单文件里直接 CDN 引一个库即可，**无需构建**。看相（配色/排版/动效）交给 `frontend-design` skill，这里只管「画什么」。
+**优先用「声明式 / 文本驱动」的库** —— agent 写 JSON/文本比手写命令式绘图代码可靠得多。图表元素照常可加 `data-live`（如多人同步「当前视图/筛选」）。下面的库均已核实在活跃维护。
+
+- **通用图表**：[ECharts](https://github.com/apache/echarts)（默认首选，最全）· [Chart.js](https://github.com/chartjs/Chart.js)（轻量 canvas）· [Plotly.js](https://github.com/plotly/plotly.js)（科学/统计/3D）· [ApexCharts](https://github.com/apexcharts/apexcharts.js)（交互漂亮直观）· [charts.css](https://github.com/ChartsCSS/charts.css)（纯 CSS，零 JS，最适合简单条/线）
+- **声明式（agent 友好，推荐）**：[Vega-Lite](https://github.com/vega/vega-lite)（JSON 描述图表）· [Mermaid](https://github.com/mermaid-js/mermaid)（文本→流程图/时序/甘特，CDN 一行）· [D2](https://github.com/terrastruct/d2)（更复杂的图；浏览器用 wasm 版）
+- **时序**：[uPlot](https://github.com/leeoniya/uPlot)（小而快）· [lightweight-charts](https://github.com/tradingview/lightweight-charts)（金融）
+- **表格 / 数据网格**：[Grid.js](https://github.com/grid-js/gridjs)（简单，排序/搜索/分页）· [RevoGrid](https://github.com/revolist/revogrid)（高性能可编辑，Excel 模式）· [Jspreadsheet CE](https://github.com/jspreadsheet/ce) · [AntV S2](https://github.com/antvis/S2)（透视表）
+- **关系图 / 流程 / 网络**：[AntV G6](https://github.com/antvis/G6) / [X6](https://github.com/antvis/X6) · [Cytoscape.js](https://github.com/cytoscape/cytoscape.js) · [3d-force-graph](https://github.com/vasturiano/3d-force-graph)（GoJS 也强，但**商业授权**）
+- **甘特 / 时间线**：[Frappe Gantt](https://github.com/frappe/gantt) · [vis-timeline](https://github.com/visjs/vis-timeline)
+- **大 / 流数据**：[Perspective](https://github.com/perspective-dev/perspective)（web-component，高性能）
+
+最稳的做法：把数据塞进 ECharts `option` 或 Vega-Lite JSON；流程/架构图直接写 Mermaid 文本，让库去渲染。
+
+## 动画（可选·进阶）
+
+单文件 CDN 即可，**能用 CSS 就别上库** —— frontend-design 推荐的「一次编排好的入场动画（staggered `animation-delay`）」纯 CSS 就够。需要 JS 时（均已核实活跃）：
+
+- **[auto-animate](https://github.com/formkit/auto-animate)** —— ⭐ 最贴合 livehtml：零配置，自动给 DOM 增删/重排加过渡。多人实时同步的列表/卡片出现、重排时直接顺滑，一行接入。
+- **[Motion](https://github.com/motiondivision/motion)** —— 现代首选，vanilla `animate()` API（已**取代**归档的 Motion One / Popmotion / Framer Motion）。
+- **[anime.js](https://github.com/juliangarnier/anime)** —— 通用时间线动画。
+- **[GSAP](https://github.com/greensock/GSAP)** —— 复杂/滚动驱动动画（现已全免费），按需再上。
+- **[typed.js](https://github.com/mattboldt/typed.js/)** —— 打字机效果（报告开场等）。
+
+不要再用（已归档/合并）：Motion One、Popmotion、Framer Motion（并入 Motion）、lax.js、newcar。
+
 ---
 
 > **以下两节仅适用于「部署开启了登录/令牌门」的情况，且都是可选 / 进阶。**
