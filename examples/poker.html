@@ -61,7 +61,7 @@
   <div class="card">
     <div class="row">
       <div>
-        <label class="fld">你的名字</label>
+        <label class="fld" id="nameLabel">你的名字</label>
         <input type="text" id="name" placeholder="输入名字让大家认出你…" autocomplete="off">
       </div>
       <div style="flex:2">
@@ -108,14 +108,31 @@
   // per-connection clientId. See livehtml SKILL.md "在线身份：按连接 vs 按用户".
   function voteKey(){ var m = window.LiveHtml && window.LiveHtml.me; return (m && m.userId) || ME; }
   function peerKey(p){ return (p.user && p.user.userId) || p.id; }
+  function authed(){ var m = window.LiveHtml && window.LiveHtml.me; return !!(m && m.userId); }
 
   // ---- name ----
+  // Logged in (DingTalk gate on): the name is the server-verified 实名 and can't
+  // be changed from the client, so lock the field and show it read-only. Anonymous
+  // deploys keep the editable input + setUser.
   var nameEl = document.getElementById("name");
+  var nameLabel = document.getElementById("nameLabel");
   try{ nameEl.value = localStorage.getItem("livehtml:user") || ""; }catch(e){}
   nameEl.addEventListener("input", function(){
+    if(authed()) return;                 // verified name is server-owned; edits are ignored
     var n = nameEl.value.trim();
     if(n && window.LiveHtml) window.LiveHtml.setUser(n);
   });
+  var nameLocked = false;
+  function syncNameField(){
+    if(nameLocked || !authed()) return;  // run once, after the verified identity resolves
+    nameLocked = true;
+    nameEl.value = window.LiveHtml.me.name || "";
+    nameEl.readOnly = true;
+    nameEl.style.opacity = ".65";
+    nameEl.style.cursor = "not-allowed";
+    nameEl.title = "已用钉钉登录，实名自动同步，无需填写";
+    if(nameLabel) nameLabel.textContent = "你的名字 · 钉钉实名 🔒";
+  }
 
   // ---- deck ----
   var deck = document.getElementById("deck");
@@ -147,6 +164,7 @@
 
   function render(){
     if(!window.LiveHtml) return;
+    syncNameField();
     var state = window.LiveHtml.state;
     var peers = window.LiveHtml.peers;
     if(!peers.length) peers = [{id:ME, user:{name:nameEl.value||"你"}}];
