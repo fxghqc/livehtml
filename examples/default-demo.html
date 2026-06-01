@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>data-default demo</title>
+<style>
+  body{font:15px/1.6 -apple-system,sans-serif;max-width:640px;margin:48px auto;padding:0 20px;color:#1f2430}
+  h1{font-size:20px;margin:.2em 0}
+  .nameplate{display:inline-block;border:1px solid #d6dae3;border-radius:8px;padding:6px 12px;min-width:160px}
+  textarea{width:100%;min-height:80px;border:1px solid #d6dae3;border-radius:8px;padding:10px;font:inherit}
+  .hint{color:#7a8190;font-size:13px}
+  /* hide first-screen-sensitive live fields until sync.js has seeded defaults */
+  body.live-pending .first-screen-live-fields{visibility:hidden}
+</style>
+</head>
+<body class="live-pending">
+  <div class="first-screen-live-fields">
+    <h1>🪪 <span contenteditable data-live="meta:title" data-default="A系列晨检副本">A系列晨检副本</span></h1>
+    <p class="nameplate" contenteditable data-live="meta:owner" data-default="未指派">未指派</p>
+  </div>
+
+  <p class="hint">下面是普通字段（无 data-default），清空后保持空：</p>
+  <textarea data-live="notes" placeholder="备注…"></textarea>
+
+  <p><input type="checkbox" data-live="done"> 完成</p>
+
+  <script src="/sync.js"></script>
+</body>
+</html>

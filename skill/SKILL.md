@@ -98,6 +98,24 @@ Anything with a `data-live="<key>"` attribute. sync.js detects the element type 
 
 Each `data-live="..."` key is independent. Two elements with the same key stay in sync with each other (useful for "summary at top + detail at bottom" patterns).
 
+## 首屏默认值：用 `data-default`（重要）
+
+`sync.js` 异步接入：先渲染 HTML，WS 连上后再用服务端状态覆盖所有 `data-live` 元素。把默认值只写在元素里会出两类问题——**首屏闪烁**（默认值被真实值顶替），和**默认值丢失**（服务端无此 key 时元素被清空；contenteditable 尤甚，清空后残留 `<br>`，刷新即用空值覆盖默认文案）。
+
+**首屏敏感字段**（标题 / 铭牌 / 任务名 / 案号 / 说明 / 便签 / `contenteditable` / 隐藏 input —— 任何「空值会破坏首屏」的字段）**别只写裸默认值，加 `data-default`**；checkbox / radio / select 一般不用。sync.js 已内置处理、无需 seed 脚本——state 有非空值就用真实值，缺失 / 空 / `<br>` 则用 `data-default` 并自动写回持久化（反模式：裸 `<span contenteditable data-live="meta:title">默认</span>`，刷新即被清空）：
+
+```html
+<span contenteditable data-live="meta:title" data-default="A系列晨检副本">A系列晨检副本</span>
+```
+
+**去闪烁（可选）**：给 `<body class="live-pending">` 加 CSS 隐藏首屏字段，sync.js 拿到状态后（或 1.5s 兜底）自动移除该类：
+
+```css
+body.live-pending .first-screen-live-fields { visibility: hidden; }
+```
+
+**修已部署页面**：`livehtml get <key>` 看是否已被清空，再**先 get、合并、再 set**写回默认（别覆盖用户已有数据）：`livehtml set <key> '{"meta:title":"A系列晨检副本"}'`。
+
 ## Read back state (agent-side)
 
 Once a page is live, its state is plain JSON. Read it back to see what users

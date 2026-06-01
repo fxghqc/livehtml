@@ -167,7 +167,7 @@
     if (key in state) {
       suppress = true;
       try {
-        setVal(el, state[key]);
+        applyValueWithDefault(el, key, state[key]);
       } finally {
         suppress = false;
       }
@@ -188,6 +188,46 @@
     });
   }
 
+  function blank(v) {
+    return (
+      v === undefined ||
+      v === null ||
+      v === "" ||
+      v === "<br>" ||
+      v === "<div><br></div>"
+    );
+  }
+
+  // Apply a value to a data-live element, honoring `data-default`: when the
+  // incoming value is blank (missing / "" / empty-contenteditable markup) and the
+  // element declares data-default, show the default instead of wiping to empty —
+  // and seed that default back into shared state so it persists across reloads.
+  // Elements WITHOUT data-default keep the old behavior (blank -> empty).
+  function applyValueWithDefault(el, key, v) {
+    const def = el.dataset ? el.dataset.default : undefined;
+    if (def !== undefined && blank(v)) {
+      setVal(el, def);
+      if (blank(state[key])) {
+        state[key] = def;
+        sendMsg({ t: "set", key, v: def });
+      }
+    } else {
+      setVal(el, v === undefined ? "" : v);
+    }
+  }
+
+  let revealed = false;
+  function reveal() {
+    // Drop the page's first-paint guard class once initial state is applied.
+    // Pages may hide first-screen live fields via `body.live-pending` CSS to
+    // avoid the default→real-value flicker; sync.js removes it here.
+    if (revealed) return;
+    revealed = true;
+    try {
+      document.body.classList.remove("live-pending");
+    } catch {}
+  }
+
   function applyKey(key, v) {
     if (v === undefined) delete state[key];
     else state[key] = v;
@@ -197,8 +237,7 @@
     try {
       for (const el of set) {
         if (isTextLike(el) && document.activeElement === el) continue;
-        if (v === undefined) setVal(el, "");
-        else setVal(el, v);
+        applyValueWithDefault(el, key, v);
       }
     } finally {
       suppress = false;
@@ -213,8 +252,7 @@
         const v = state[key];
         for (const el of set) {
           if (isTextLike(el) && document.activeElement === el) continue;
-          if (v === undefined) setVal(el, "");
-          else setVal(el, v);
+          applyValueWithDefault(el, key, v);
         }
       }
     } finally {
@@ -252,6 +290,7 @@
           // adopt it so our own presence row + self-checks match.
           if (msg.you) myId = msg.you;
           applyFullState(msg.state || {});
+          reveal();
           peers = msg.peers || [];
           updateChip();
           break;
@@ -464,6 +503,9 @@
     buildChip();
     scanAndBind(document);
     observeDom();
+    // Fallback reveal: if the WS is slow/offline, still un-hide first-screen
+    // fields (showing HTML defaults) so the page never stays hidden.
+    setTimeout(reveal, 1500);
     // If the deployment requires login, /auth/me returns the verified identity.
     fetch("/auth/me", { credentials: "same-origin" })
       .then((r) => (r.ok ? r.json() : null))
