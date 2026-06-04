@@ -40,16 +40,26 @@ if (MINIO_ENDPOINT) {
     accessKey: process.env.MINIO_ACCESS_KEY || "",
     secretKey: process.env.MINIO_SECRET_KEY || "",
   });
-  try {
-    if (!(await minio.bucketExists(MINIO_BUCKET))) {
-      await minio.makeBucket(MINIO_BUCKET);
-      console.log(`[minio] created bucket "${MINIO_BUCKET}"`);
+  // Ensure the bucket in the background with capped-backoff retries. At boot
+  // MinIO may not be accepting connections yet (e.g. both containers restarting
+  // together after a host outage) — a transient failure must NOT permanently
+  // disable storage, so the client is never nulled here. `minio === null` means
+  // exactly "MINIO_ENDPOINT unset".
+  void (async () => {
+    for (let delay = 1000; ; delay = Math.min(delay * 2, 30_000)) {
+      try {
+        if (!(await minio!.bucketExists(MINIO_BUCKET))) {
+          await minio!.makeBucket(MINIO_BUCKET);
+          console.log(`[minio] created bucket "${MINIO_BUCKET}"`);
+        }
+        console.log(`[minio] connected to ${MINIO_ENDPOINT}, bucket="${MINIO_BUCKET}"`);
+        return;
+      } catch (e) {
+        console.error(`[minio] init failed (retry in ${delay / 1000}s):`, (e as Error)?.message ?? e);
+        await new Promise((r) => setTimeout(r, delay));
+      }
     }
-    console.log(`[minio] connected to ${MINIO_ENDPOINT}, bucket="${MINIO_BUCKET}"`);
-  } catch (e) {
-    console.error(`[minio] init failed:`, e);
-    minio = null;
-  }
+  })();
 }
 
 // ---- Auth (optional; both gates off => unchanged behavior) ----
