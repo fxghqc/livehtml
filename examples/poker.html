@@ -155,7 +155,7 @@
     window.LiveHtml.set("revealed", false);
   });
 
-  // ---- render loop ----
+  // ---- render (driven by LiveHtml.onChange) ----
   var roster = document.getElementById("roster");
   var statsEl = document.getElementById("stats");
   var onlineN = document.getElementById("onlineN");
@@ -218,8 +218,7 @@
       statsEl.style.display="none";
     }
   }
-  setInterval(render, 250);
-  render();
+  window.LiveHtml.onChange(render);
 })();
 </script>
 </body>

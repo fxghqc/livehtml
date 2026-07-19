@@ -153,9 +153,36 @@
   let authedIdentity = false;
   let deniedLogin = false;
 
+  const listeners = new Set();
+
+  function notifyListeners() {
+    const snap = { ...state };
+    for (const cb of listeners) {
+      try {
+        cb(snap);
+      } catch (e) {
+        console.warn("[livehtml] onChange 回调抛错（已忽略）:", e);
+      }
+    }
+  }
+
   function bind(el) {
     const key = el.dataset.live;
     if (!key) return;
+    const synced =
+      el.tagName === "INPUT" ||
+      el.tagName === "SELECT" ||
+      el.tagName === "TEXTAREA" ||
+      el.tagName === "DETAILS" ||
+      el.isContentEditable;
+    if (!synced && el.children && el.children.length > 0) {
+      // Binding a container would sync its textContent and wipe the children
+      // (radios, labels, …) on the first applied value — refuse instead.
+      console.warn(
+        "[livehtml] data-live 应放在内部的 input/select 上，容器绑定已忽略以防清空内容: " + key,
+      );
+      return;
+    }
     let set = bindings.get(key);
     if (!set) {
       set = new Set();
@@ -293,21 +320,26 @@
           reveal();
           peers = msg.peers || [];
           updateChip();
+          notifyListeners();
           break;
         case "set":
           applyKey(msg.key, msg.v);
           flashChange(msg.key, msg.by);
+          notifyListeners();
           break;
         case "del":
           applyKey(msg.key, undefined);
           flashChange(msg.key, msg.by);
+          notifyListeners();
           break;
         case "replace":
           applyFullState(msg.state || {});
+          notifyListeners();
           break;
         case "pres":
           peers = msg.peers || [];
           updateChip();
+          notifyListeners();
           break;
         case "denied":
           deniedLogin = true;
@@ -524,6 +556,24 @@
 
   // ---- Public API ----
 
+  // Subscribe to state changes (the only event API). The callback receives a
+  // state snapshot, fires once immediately on subscribe, and again on every
+  // remote init/set/del/replace/pres and local LiveHtml.set/del. Returns an
+  // unsubscribe function.
+  function onChange(cb) {
+    if (typeof cb !== "function") {
+      console.warn("[livehtml] LiveHtml.onChange 需要函数参数，已忽略");
+      return () => {};
+    }
+    listeners.add(cb);
+    try {
+      cb({ ...state });
+    } catch (e) {
+      console.warn("[livehtml] onChange 回调抛错（已忽略）:", e);
+    }
+    return () => listeners.delete(cb);
+  }
+
   window.LiveHtml = {
     get state() {
       return { ...state };
@@ -540,6 +590,10 @@
       // per-connection -> me.id ; per-user -> me.userId || me.id.
       return { id: myId, name: (user && user.name) || null, userId: (user && user.userId) || null };
     },
+    onChange,
+    onStateChange: onChange,
+    subscribe: onChange,
+    getState: () => ({ ...state }),
     setUser(u) {
       user = typeof u === "string" ? { name: u } : u;
       if (user.name) saveUserName(user.name);
@@ -550,11 +604,13 @@
       state[key] = v;
       sendMsg({ t: "set", key, v });
       applyKey(key, v);
+      notifyListeners();
     },
     del(key) {
       delete state[key];
       sendMsg({ t: "del", key });
       applyKey(key, undefined);
+      notifyListeners();
     },
   };
 
