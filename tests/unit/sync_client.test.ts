@@ -227,6 +227,25 @@ test("a throwing subscriber does not break other subscribers or sync", async () 
   expect(h.warns.some((w) => w.includes("onChange 回调抛错"))).toBe(true);
 });
 
+test("a subscriber calling LiveHtml.set does not recurse; the nested set still hits the wire", async () => {
+  const h = await boot();
+  h.ws().dispatch({ t: "init", you: "me-1", state: {}, peers: [] });
+  let calls = 0;
+  h.win.LiveHtml.onChange(() => {
+    calls++;
+    h.win.LiveHtml.set("echo", "x"); // would recurse forever without the guard
+  });
+  h.ws().dispatch({ t: "set", key: "y", v: 1, by: "other" });
+  expect(calls).toBeLessThan(10);
+  expect(h.win.LiveHtml.state.echo).toBe("x");
+  // The guard suppresses only the re-notification, never the write itself.
+  const echoSends = h
+    .ws()
+    .sent.map((s) => JSON.parse(s))
+    .filter((m) => m.t === "set" && m.key === "echo");
+  expect(echoSends.length).toBeGreaterThan(0);
+});
+
 test("onStateChange / subscribe alias onChange; getState returns a snapshot", async () => {
   const h = await boot();
   expect(h.win.LiveHtml.onStateChange).toBe(h.win.LiveHtml.onChange);

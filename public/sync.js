@@ -154,15 +154,22 @@
   let deniedLogin = false;
 
   const listeners = new Set();
+  let notifying = false;
 
   function notifyListeners() {
-    const snap = { ...state };
-    for (const cb of listeners) {
-      try {
-        cb(snap);
-      } catch (e) {
-        console.warn("[livehtml] onChange 回调抛错（已忽略）:", e);
+    if (notifying) return; // a callback calling LiveHtml.set must not recurse
+    notifying = true;
+    try {
+      const snap = { ...state };
+      for (const cb of Array.from(listeners)) {
+        try {
+          cb(snap);
+        } catch (e) {
+          console.warn("[livehtml] onChange 回调抛错（已忽略）:", e);
+        }
       }
+    } finally {
+      notifying = false;
     }
   }
 
