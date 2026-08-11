@@ -20,11 +20,21 @@ echo "$R" | grep -qiE "^HTTP/[0-9.]+ 302" || fail "step1 expected 302, got: $(ec
 echo "$R" | grep -qi "^location: /auth/dingtalk/login?next=" || fail "step1 wrong location: $R"
 pass "step 1: anon page GET -> 302 login"
 
-# 2. valid session -> gate passes (MinIO missing => 503, NOT a 302 login)
+# 2. valid session in a real browser navigation -> gate passes
+#    (MinIO missing => 503, NOT a 302 login)
 SESS=$(mint_session "u1" "T" "$SESSION_SECRET")
-CODE=$(curl -sS -o /dev/null -w "%{http_code}" --cookie "lh_sess=$SESS" "$BASE/pages/secret-doc")
+NAV=(-H "Sec-Fetch-Site: same-origin" -H "Sec-Fetch-Mode: navigate" -H "Sec-Fetch-Dest: document")
+CODE=$(curl -sS -o /dev/null -w "%{http_code}" --cookie "lh_sess=$SESS" "${NAV[@]}" "$BASE/pages/secret-doc")
 [ "$CODE" != "302" ] || fail "step2 still redirected with valid session"
 assert_eq 503 "$CODE" "step2 expected 503 (no minio) after gate, got $CODE"
 pass "step 2: authed page GET passes gate (503 from missing minio)"
+
+# 3. the same cookie shaped like a script request is NOT enough: the session
+#    unlocks a page for a person, not for JS running inside another page.
+CODE=$(curl -sS -o /dev/null -w "%{http_code}" --cookie "lh_sess=$SESS" \
+  -H "Sec-Fetch-Site: same-origin" -H "Sec-Fetch-Mode: cors" -H "Sec-Fetch-Dest: empty" \
+  "$BASE/pages/secret-doc")
+assert_eq 401 "$CODE" "step3 a script-shaped request must not ride the cookie, got $CODE"
+pass "step 3: script-shaped GET with the same cookie -> 401"
 
 echo "OK: human page gate"

@@ -6,8 +6,11 @@ import { Client as MinioClient } from "minio";
 import { loadAuthConfig } from "./auth/config.ts";
 import { createDingTalkClient } from "./auth/dingtalk.ts";
 import { handleAuthRoute } from "./auth/routes.ts";
-import { readSession, parseCookies } from "./auth/session.ts";
-import { apiTokenOk, humanAllowed, parsePublicMeta, sanitizeNext, roomPublicKey } from "./auth/gate.ts";
+import { readSession, parseCookies, signRoomToken, verifyRoomToken } from "./auth/session.ts";
+import { apiTokenOk, humanAllowed, isNavigation, parsePublicMeta, parseReadRooms, roomPublicKey, sanitizeNext } from "./auth/gate.ts";
+import { injectSync } from "./inject.ts";
+import { createOpsLimiter } from "./limits.ts";
+import { lintHtml } from "./lint.ts";
 
 const PORT = Number(process.env.PORT || 8787);
 const ROOT = import.meta.dir;
@@ -17,6 +20,29 @@ const EXAMPLES_DIR = join(ROOT, "examples");
 const SKILL_DIR = join(ROOT, "skill");
 const MAX_HTML_SIZE = 10 * 1024 * 1024; // 10MB
 const MAX_WAIT_SEC = 60;
+
+// How long a `~` (live-only) key survives without being rewritten before the
+// server reclaims it. `0` = never (keys live until the process does).
+const TRANSIENT_TTL_SEC = (() => {
+  const n = Number(process.env.TRANSIENT_TTL_SEC ?? 30);
+  return Number.isFinite(n) && n >= 0 ? n : 30;
+})();
+const TRANSIENT_SWEEP_MS = 1000;
+
+// Upstream guardrails. One op is fanned out to every peer in the room, stamped,
+// and (unless transient) debounced to disk — so both its size and its rate are
+// everyone else's problem, not just the writer's.
+const OPS_MAX_BYTES = (() => {
+  const n = Number(process.env.OPS_MAX_BYTES ?? 262144);
+  return Number.isFinite(n) && n > 0 ? n : 262144;
+})();
+// `0` turns rate limiting off. Ordinary collaboration pages (checkboxes, forms,
+// votes) sit orders of magnitude below this; a page that writes per animation
+// frame does not, and is meant to feel it.
+const OPS_RATE_PER_SEC = (() => {
+  const n = Number(process.env.OPS_RATE_PER_SEC ?? 60);
+  return Number.isFinite(n) && n >= 0 ? n : 60;
+})();
 
 // Long-poll opaque etag is `<bootId>:<version>`. bootId changes every process
 // restart so clients whose etag predates restart get a `reset` response.
@@ -71,19 +97,28 @@ const nowSec = () => Math.floor(Date.now() / 1000);
 if (authCfg.dingtalkEnabled) console.log(`[auth] DingTalk login gate ENABLED`);
 if (authCfg.apiTokenEnabled) console.log(`[auth] API token gate ENABLED`);
 
-// Per-page public flag cache (source of truth = MinIO object metadata).
-const publicCache = new Map<string, boolean>();
-async function isPublicPage(key: string): Promise<boolean> {
-  if (!minio) return false;
-  if (publicCache.has(key)) return publicCache.get(key)!;
+// Per-page publish-time flags cache (source of truth = MinIO object metadata).
+type PageMeta = { isPublic: boolean; readRooms: string[] };
+const NO_PAGE_META: PageMeta = { isPublic: false, readRooms: [] };
+const pageMetaCache = new Map<string, PageMeta>();
+async function pageMeta(key: string): Promise<PageMeta> {
+  if (!minio) return NO_PAGE_META;
+  const cached = pageMetaCache.get(key);
+  if (cached) return cached;
   try {
     const st: any = await minio.statObject(MINIO_BUCKET, key);
-    const pub = parsePublicMeta(st?.metaData);
-    publicCache.set(key, pub);
-    return pub;
+    const meta: PageMeta = {
+      isPublic: parsePublicMeta(st?.metaData),
+      readRooms: parseReadRooms(st?.metaData),
+    };
+    pageMetaCache.set(key, meta);
+    return meta;
   } catch {
-    return false;
+    return NO_PAGE_META;
   }
+}
+async function isPublicPage(key: string): Promise<boolean> {
+  return (await pageMeta(key)).isPublic;
 }
 function apiAuth(req: Request): { ok: boolean; uid?: string; resp?: Response } {
   const gateActive = authCfg.dingtalkEnabled || authCfg.apiTokenEnabled;
@@ -94,19 +129,57 @@ function apiAuth(req: Request): { ok: boolean; uid?: string; resp?: Response } {
 }
 
 type RoomState = Record<string, unknown>;
-type Peer = { id: string; room: string; user: unknown; auth: { uid: string; name: string } | null };
+type Peer = {
+  id: string;
+  room: string;
+  user: unknown;
+  auth: { uid: string; name: string } | null;
+  // The connection presented a valid API bearer at upgrade — a non-browser
+  // client (agent CLI, custom client), which has no page GET to be handed a
+  // room token by and so is exempt from the room binding.
+  api: boolean;
+  // Per-connection id fixed at upgrade. `id` is the client-chosen correlation
+  // id and can be anything the page says, so it can never be a rate-limit key:
+  // a runaway page would just rotate it. This one the client cannot touch.
+  conn: string;
+};
 type WsData = { peer: Peer };
 
 const rooms = new Map<string, RoomState>();
 const writeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const writeChains = new Map<string, Promise<void>>();
 const peersByRoom = new Map<string, Set<ServerWebSocket<WsData>>>();
+// Read-only cross-room subscribers: a page that declared `--read <room>` at
+// publish time is attached here for each declared room. They receive that
+// room's frames wrapped in `{t:"room", room, msg}` (the page multiplexes on
+// `room`), never appear in its presence, and cannot write to it — `set`/`del`
+// only ever touch `peer.room`, so there is no write path to reject.
+const readersByRoom = new Map<string, Set<ServerWebSocket<WsData>>>();
+const opsLimiter = createOpsLimiter();
 
 // Phase C — per-key metadata kept parallel to `rooms` (flat). Disk
 // envelope: { version: 2, fields: { key: { v, ts, by } } }. Format
 // detection uses the top-level `version` field only, never field shape.
 type FieldMeta = { ts: string; by: string };
 const metaByRoom = new Map<string, Record<string, FieldMeta>>();
+
+// Two key prefixes are special, and they are orthogonal.
+//
+// `~` = live-only. The key broadcasts and sits in room memory like any other,
+// but it never reaches the persisted envelope and never moves the version
+// counter — so it produces no new etag and does not wake a parked `?wait=`
+// long-poll. For cursors, typing hints, high-frequency snapshots: anything
+// whose value is worthless a second later and whose write rate would otherwise
+// thrash the debounced disk write and the agent's change loop.
+function isTransientKey(key: string): boolean {
+  return key.startsWith("~");
+}
+
+// `__` = server-owned (`__users`). Browser writers may not set or delete one;
+// otherwise an ordinary persisted key.
+function isReservedKey(key: string): boolean {
+  return key.startsWith("__");
+}
 
 function setKeyMeta(room: string, key: string, by: string) {
   let m = metaByRoom.get(room);
@@ -202,6 +275,7 @@ async function doSave(room: string) {
       const meta = metaByRoom.get(room) ?? {};
       const fields: Record<string, { v: unknown; ts: string; by: string }> = {};
       for (const k of Object.keys(state)) {
+        if (isTransientKey(k)) continue;
         const m = meta[k];
         fields[k] = { v: state[k], ts: m?.ts ?? "", by: m?.by ?? "" };
       }
@@ -216,6 +290,45 @@ async function doSave(room: string) {
   await next;
 }
 
+// ---- Transient (`~`) key reclamation ----
+
+let transientSweepTimer: ReturnType<typeof setInterval> | null = null;
+
+// Eviction goes out as an ordinary `del`, with two markers on the frame: no
+// author (`by: ""` — a participant's `by` is a clientId or a verified uid, so
+// it is never empty) plus `src: "server"`, which lets a page that filters `del`
+// frames by author tell a reclaim apart from a peer's delete. Deliberately no
+// scheduleSave (the key was never in the envelope) and no bumpAndNotify (a
+// parked long-poll must not wake on a transient key, expiring or not).
+function sweepTransientKeys(): void {
+  if (TRANSIENT_TTL_SEC <= 0) return;
+  const nowMs = Date.now();
+  const ttlMs = TRANSIENT_TTL_SEC * 1000;
+  for (const [room, state] of rooms) {
+    const meta = metaByRoom.get(room);
+    for (const key of Object.keys(state)) {
+      if (!isTransientKey(key)) continue;
+      const ts = Date.parse(meta?.[key]?.ts ?? "");
+      // A missing or unparseable stamp counts as expired: erring toward
+      // eviction is the direction that cannot leak, and a live writer
+      // re-stamps its key within one write anyway.
+      if (Number.isFinite(ts) && nowMs - ts <= ttlMs) continue;
+      delete state[key];
+      if (meta) delete meta[key];
+      broadcast(room, { t: "del", key, by: "", src: "server" });
+    }
+  }
+}
+
+// Armed by the paths that can put a `~` key into memory, so a server that never
+// sees one never runs the timer. loadRoom can't introduce one (they are filtered
+// out of the envelope), so those paths are exhaustive.
+function ensureTransientSweep(): void {
+  if (transientSweepTimer || TRANSIENT_TTL_SEC <= 0) return;
+  transientSweepTimer = setInterval(sweepTransientKeys, TRANSIENT_SWEEP_MS);
+  if (typeof transientSweepTimer.unref === "function") transientSweepTimer.unref();
+}
+
 function presenceList(room: string) {
   const set = peersByRoom.get(room);
   if (!set) return [];
@@ -224,9 +337,15 @@ function presenceList(room: string) {
 
 function broadcast(room: string, msg: unknown, except?: ServerWebSocket<WsData>) {
   const set = peersByRoom.get(room);
-  if (!set) return;
-  const payload = JSON.stringify(msg);
-  for (const ws of set) if (ws !== except) ws.send(payload);
+  if (set) {
+    const payload = JSON.stringify(msg);
+    for (const ws of set) if (ws !== except) ws.send(payload);
+  }
+  const readers = readersByRoom.get(room);
+  if (readers) {
+    const wrapped = JSON.stringify({ t: "room", room, msg });
+    for (const ws of readers) if (ws !== except) ws.send(wrapped);
+  }
 }
 
 const CORS: Record<string, string> = {
@@ -271,6 +390,8 @@ function roomForPageKey(key: string): string {
   return sanitizeRoom("pages/" + key);
 }
 
+const MAX_READ_ROOMS = 16;
+
 async function readBodyToBuffer(req: Request): Promise<Buffer | null> {
   const buf = await req.arrayBuffer();
   if (buf.byteLength === 0 || buf.byteLength > MAX_HTML_SIZE) return null;
@@ -289,6 +410,43 @@ function jsonResp(body: unknown, status = 200) {
 }
 function errResp(msg: string, status: number) {
   return new Response(msg, { status, headers: CORS });
+}
+
+// Server-owned roster {uid: name}, kept in the reserved `__users` key so a page
+// can put a name on a participant who has already left — `presenceList` only
+// knows live connections. Only authenticated peers are recorded: an anonymous
+// peer's id and name are both self-declared, and on a public page the roster
+// would then grow once per visit rather than once per person.
+async function upsertRoomUser(room: string, uid: string, name: string): Promise<void> {
+  const state = await loadRoom(room);
+  const cur = state["__users"];
+  const users =
+    cur && typeof cur === "object" && !Array.isArray(cur)
+      ? (cur as Record<string, unknown>)
+      : {};
+  if (users[uid] === name) return; // reconnects must not broadcast
+  state["__users"] = { ...users, [uid]: name };
+  setKeyMeta(room, "__users", "system");
+  scheduleSave(room);
+  broadcast(room, { t: "set", key: "__users", v: state["__users"], by: "system" });
+  bumpAndNotify(room);
+}
+
+// Replace a room's whole state (HTTP PUT / DELETE). `__users` is server-owned,
+// so a caller can neither set it nor drop it: it is stripped from the incoming
+// body and the current value carried over. Loading first matters — a cold room
+// would otherwise lose the roster still sitting on disk.
+async function replaceRoomState(room: string, next: RoomState, by: string): Promise<void> {
+  const cur = (await loadRoom(room))["__users"];
+  const state: RoomState = { ...next };
+  delete state["__users"];
+  if (cur !== undefined) state["__users"] = cur;
+  rooms.set(room, state);
+  replaceRoomMeta(room, Object.keys(state), by);
+  if (Object.keys(state).some(isTransientKey)) ensureTransientSweep();
+  scheduleSave(room);
+  broadcast(room, { t: "replace", state, by });
+  bumpAndNotify(room);
 }
 
 async function handleStateRoom(req: Request, room: string, by = "http"): Promise<Response | null> {
@@ -316,19 +474,11 @@ async function handleStateRoom(req: Request, room: string, by = "http"): Promise
     if (typeof body !== "object" || body === null || Array.isArray(body)) {
       return new Response("body must be a JSON object", { status: 400, headers: CORS });
     }
-    rooms.set(room, body as RoomState);
-    replaceRoomMeta(room, Object.keys(body as RoomState), by);
-    scheduleSave(room);
-    broadcast(room, { t: "replace", state: body, by });
-    bumpAndNotify(room);
+    await replaceRoomState(room, body as RoomState, by);
     return Response.json({ ok: true, room }, { headers: CORS });
   }
   if (req.method === "DELETE") {
-    rooms.set(room, {});
-    metaByRoom.set(room, {});
-    scheduleSave(room);
-    broadcast(room, { t: "replace", state: {}, by });
-    bumpAndNotify(room);
+    await replaceRoomState(room, {}, by);
     return Response.json({ ok: true, room }, { headers: CORS });
   }
   return null;
@@ -456,7 +606,7 @@ async function longPoll(
   });
 }
 
-const server = Bun.serve({
+const server = Bun.serve<WsData, string>({
   port: PORT,
 
   async fetch(req, srv) {
@@ -465,13 +615,16 @@ const server = Bun.serve({
 
     if (path === "/ws") {
       const sess = authCfg.dingtalkEnabled ? readSession(req, authCfg.sessionSecret, nowSec()) : null;
+      const conn = crypto.randomUUID();
       const ok = srv.upgrade(req, {
         data: {
           peer: {
-            id: crypto.randomUUID(),
+            id: conn,
+            conn,
             room: "",
             user: null,
             auth: sess ? { uid: sess.uid, name: sess.name } : null,
+            api: apiTokenOk(req, authCfg.apiToken, authCfg.sessionSecret, nowSec()).ok,
           },
         } satisfies WsData,
       });
@@ -712,9 +865,23 @@ Write-Host "Done. Restart your agent. Protected deploy? Run: bun <skills>/liveht
       if (req.method === "GET" && authCfg.dingtalkEnabled) {
         const isPub = await isPublicPage(key);
         const hasSession = !!readSession(req, authCfg.sessionSecret, nowSec());
-        if (!humanAllowed({ gateOn: true, isPublic: isPub, hasSession })) {
+        // A bearer already carries PUT/DELETE on every page, so bouncing it to
+        // a login page on GET was an inconsistency, not a defence.
+        const byBearer = apiTokenOk(req, authCfg.apiToken, authCfg.sessionSecret, nowSec()).ok;
+        if (!byBearer && !humanAllowed({ gateOn: true, isPublic: isPub, hasSession })) {
           const loc = `/auth/dingtalk/login?next=${encodeURIComponent(path)}`;
           return new Response(null, { status: 302, headers: { ...CORS, Location: loc } });
+        }
+        // A protected page's HTML is unlocked by the viewer's cookie, and every
+        // published page runs on this same origin — so without this, a fetch()
+        // from inside one page would carry that cookie and hand the page the
+        // source of every protected page the viewer can see. Cookie access is
+        // for people: require a navigation (frames included, so embedding still
+        // works). Bearer callers are unaffected, and public pages are excluded
+        // because there is nothing there a fetch could learn that a plain GET
+        // wouldn't hand out anyway.
+        if (!isPub && !byBearer && !isNavigation(req, true)) {
+          return errResp("page HTML is served to navigations only", 401);
         }
       }
 
@@ -730,20 +897,64 @@ Write-Host "Done. Restart your agent. Protected deploy? Run: bun <skills>/liveht
         const body = await readBodyToBuffer(req);
         if (!body) return errResp(`body must be non-empty and ≤ ${MAX_HTML_SIZE} bytes`, 400);
         const isPub = /^(1|true|yes)$/i.test(req.headers.get("x-public") || "");
+        const readRooms = parseReadRooms({ "read-rooms": req.headers.get("x-read-rooms") || "" })
+          .map(sanitizeRoom);
+        if (readRooms.length > MAX_READ_ROOMS) {
+          return errResp(`X-Read-Rooms lists more than ${MAX_READ_ROOMS} rooms`, 400);
+        }
+        // Publish-time lint. Errors block and come back as data, so an agent
+        // reads what is wrong and re-publishes without a human in the loop;
+        // X-Skip-Lint is the escape hatch for the day the lint is the one that
+        // is wrong.
+        const skipLint = /^(1|true|yes)$/i.test(req.headers.get("x-skip-lint") || "");
+        const lint = skipLint
+          ? { errors: [], warnings: [] }
+          : await lintHtml(body.toString("utf8"));
+        if (lint.errors.length) {
+          return jsonResp({ ok: false, key, errors: lint.errors }, 400);
+        }
+
         const meta: Record<string, string> = {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-cache",
         };
         if (isPub) meta.public = "1"; // private pages omit the key (spec §10)
+        if (readRooms.length) meta["read-rooms"] = readRooms.join(",");
         await minio.putObject(MINIO_BUCKET, key, body, body.length, meta);
-        publicCache.set(key, isPub);
-        return jsonResp({ ok: true, key, url: `/pages/${key}`, room: roomForPageKey(key), public: isPub });
+        pageMetaCache.set(key, { isPublic: isPub, readRooms });
+        const resp: Record<string, unknown> = {
+          ok: true,
+          key,
+          url: `/pages/${key}`,
+          room: roomForPageKey(key),
+          public: isPub,
+        };
+        const warnings = [...lint.warnings];
+        if (readRooms.length) {
+          resp.readRooms = readRooms;
+          // Declaring a read opens those rooms to everyone who can open THIS
+          // page — including people with no access to the rooms themselves.
+          // On a public page that is everyone who can reach the server.
+          warnings.push(
+            `本页可读 ${readRooms.join("、")} —— 能打开本页的人都能看到这些房间的数据` +
+              (isPub ? "，而本页是公开页（免登录）" : ""),
+          );
+        }
+        if (warnings.length) resp.warnings = warnings;
+        return jsonResp(resp);
       }
 
       if (req.method === "GET") {
         try {
           const data = await streamMinioObject(key);
-          return new Response(data, {
+          const room = roomForPageKey(key);
+          const { readRooms } = await pageMeta(key);
+          // No session secret = no gates configured; the WS asks for no token
+          // either, so minting one would be ceremony with nothing to check it.
+          const token = authCfg.sessionSecret
+            ? signRoomToken(room, readRooms, authCfg.roomTokenTtlSec, authCfg.sessionSecret, nowSec())
+            : "";
+          return new Response(injectSync(data.toString("utf8"), room, token), {
             headers: {
               ...CORS,
               "Content-Type": "text/html; charset=utf-8",
@@ -769,7 +980,7 @@ Write-Host "Done. Restart your agent. Protected deploy? Run: bun <skills>/liveht
         const room = roomForPageKey(key);
         rooms.delete(room);
         metaByRoom.delete(room);
-        publicCache.delete(key);
+        pageMetaCache.delete(key);
         try { await unlink(roomFile(room)); } catch {}
         broadcast(room, { t: "replace", state: {}, by: "delete" });
         bumpAndNotify(room);
@@ -792,9 +1003,17 @@ Write-Host "Done. Restart your agent. Protected deploy? Run: bun <skills>/liveht
 
   websocket: {
     async message(ws, message) {
+      const raw = message.toString();
+      // Checked before parsing: an oversized frame costs a JSON.parse, a fanout
+      // to every peer in the room and a disk write, so the cheapest place to
+      // refuse it is before any of that.
+      if (Buffer.byteLength(raw) > OPS_MAX_BYTES) {
+        ws.send(JSON.stringify({ t: "too_large", limit: OPS_MAX_BYTES }));
+        return;
+      }
       let msg: any;
       try {
-        msg = JSON.parse(message.toString());
+        msg = JSON.parse(raw);
       } catch {
         return;
       }
@@ -803,16 +1022,33 @@ Write-Host "Done. Restart your agent. Protected deploy? Run: bun <skills>/liveht
       if (msg.t === "hi") {
         const room = sanitizeRoom(msg.room || "default");
 
-        // DingTalk gate: when on, a browser needs a session unless the room is
-        // backed by a public page. Non-page rooms are deny-by-default.
-        if (authCfg.dingtalkEnabled && !peer.auth) {
-          const key = roomPublicKey(room);
-          const isPub = key ? await isPublicPage(key) : false;
-          if (!humanAllowed({ gateOn: true, isPublic: isPub, hasSession: false })) {
-            ws.send(JSON.stringify({ t: "denied", reason: "login_required" }));
+        // Room binding. With the gate on, a browser must present the room token
+        // the page GET injected — a capability for THIS room and nothing else,
+        // so code running in one page can no longer join another page's room on
+        // the strength of the viewer's login. Non-browser clients present an API
+        // bearer at upgrade instead. Gate off = no tokens are minted and nothing
+        // is asked for, so the open deployment behaves exactly as before.
+        let reads: string[] = [];
+        if (authCfg.dingtalkEnabled && !peer.api) {
+          const rt =
+            typeof msg.token === "string"
+              ? verifyRoomToken(msg.token, room, authCfg.sessionSecret, nowSec())
+              : null;
+          if (!rt) {
+            ws.send(JSON.stringify({ t: "denied", reason: "room" }));
             ws.close();
             return;
           }
+          reads = rt.reads;
+        } else {
+          // No gate (or an API client): there is no capability to read the
+          // declared rooms out of, so they come straight from the page's own
+          // publish-time metadata. Nothing is being protected here — with the
+          // gate off any client may join any room directly anyway — but
+          // `watchRoom` still has to work, and silently doing nothing would be
+          // the worst of both.
+          const pageKey = roomPublicKey(room);
+          if (pageKey) reads = (await pageMeta(pageKey)).readRooms;
         }
 
         peer.room = room;
@@ -828,12 +1064,29 @@ Write-Host "Done. Restart your agent. Protected deploy? Run: bun <skills>/liveht
         } else {
           peer.user = msg.user ?? null;
         }
+        const state = await loadRoom(room);
+        // Recorded before this peer joins the broadcast set: the `__users`
+        // frame upsert sends is for the peers already here, and this one gets
+        // the whole roster in its own `init` below.
+        if (peer.auth) await upsertRoomUser(room, peer.auth.uid, peer.auth.name);
         const set = peersByRoom.get(room) ?? new Set<ServerWebSocket<WsData>>();
         set.add(ws);
         peersByRoom.set(room, set);
-        const state = await loadRoom(room);
         ws.send(JSON.stringify({ t: "init", room, state, peers: presenceList(room), you: peer.id }));
         broadcast(room, { t: "pres", peers: presenceList(room) }, ws);
+        // Declared read-only rooms are attached here rather than on request:
+        // the list is fixed at publish time and baked into the token, so there
+        // is nothing for the page to ask for — and a reconnect re-runs `hi`,
+        // which restores the subscriptions with no client-side bookkeeping.
+        for (const raw of reads) {
+          const r = sanitizeRoom(raw);
+          if (r === room) continue; // already subscribed as a participant
+          const rstate = await loadRoom(r);
+          const rset = readersByRoom.get(r) ?? new Set<ServerWebSocket<WsData>>();
+          rset.add(ws);
+          readersByRoom.set(r, rset);
+          ws.send(JSON.stringify({ t: "room", room: r, msg: { t: "init", state: rstate } }));
+        }
         return;
       }
 
@@ -843,22 +1096,46 @@ Write-Host "Done. Restart your agent. Protected deploy? Run: bun <skills>/liveht
       // else the client correlation id. Independent of the presence id.
       const by = peer.auth ? peer.auth.uid : peer.id;
 
+      // Writes are metered per (room, writer); reads, presence and the
+      // handshake are not. Keyed on the verified uid when there is one so a
+      // person cannot buy more budget by opening tabs, and on the connection
+      // otherwise — never on the client-declared id, which is self-chosen.
+      if (msg.t === "set" || msg.t === "del") {
+        const writer = peer.auth ? "u:" + peer.auth.uid : "c:" + peer.conn;
+        const gate = opsLimiter.take(peer.room, writer, OPS_RATE_PER_SEC);
+        if (!gate.ok) {
+          // The op is dropped, and the key travels with the refusal so the page
+          // can re-queue its own current value for that key once the window
+          // reopens — re-sending the dropped value would resurrect a value the
+          // page may since have superseded.
+          ws.send(JSON.stringify({ t: "throttled", key: msg.key, retryAfterMs: gate.retryAfterMs }));
+          return;
+        }
+      }
+
       if (msg.t === "set" && typeof msg.key === "string") {
+        if (isReservedKey(msg.key)) return; // server-owned, browsers can't write
         const state = await loadRoom(peer.room);
         state[msg.key] = msg.v;
         setKeyMeta(peer.room, msg.key, by);
-        scheduleSave(peer.room);
         broadcast(peer.room, { t: "set", key: msg.key, v: msg.v, by }, ws);
+        if (isTransientKey(msg.key)) {
+          ensureTransientSweep();
+          return;
+        }
+        scheduleSave(peer.room);
         bumpAndNotify(peer.room);
         return;
       }
 
       if (msg.t === "del" && typeof msg.key === "string") {
+        if (isReservedKey(msg.key)) return;
         const state = await loadRoom(peer.room);
         delete state[msg.key];
         delKeyMeta(peer.room, msg.key);
-        scheduleSave(peer.room);
         broadcast(peer.room, { t: "del", key: msg.key, by }, ws);
+        if (isTransientKey(msg.key)) return;
+        scheduleSave(peer.room);
         bumpAndNotify(peer.room);
         return;
       }
@@ -877,6 +1154,9 @@ Write-Host "Done. Restart your agent. Protected deploy? Run: bun <skills>/liveht
     },
 
     close(ws) {
+      for (const [room, readers] of readersByRoom) {
+        if (readers.delete(ws) && readers.size === 0) readersByRoom.delete(room);
+      }
       const peer = ws.data.peer;
       if (!peer.room) return;
       const set = peersByRoom.get(peer.room);

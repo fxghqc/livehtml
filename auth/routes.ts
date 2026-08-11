@@ -5,7 +5,7 @@ import {
   signSession, signToken, verifyToken, parseCookies, buildSetCookie,
   readSession, signApiToken, verifyApiToken, SESSION_COOKIE, OAUTH_COOKIE,
 } from "./session.ts";
-import { sanitizeNext, isLoopbackRedirect } from "./gate.ts";
+import { sanitizeNext, isLoopbackRedirect, isNavigation } from "./gate.ts";
 
 const CORS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -119,6 +119,19 @@ export async function handleAuthRoute(
     const sfs = req.headers.get("sec-fetch-site");
     if (sfs && sfs !== "same-origin" && sfs !== "none") {
       return new Response("cross-site request rejected", { status: 403, headers: { ...CORS, "Cache-Control": "no-store" } });
+    }
+    // …and the same-origin case is not safe by itself here, because this server
+    // hosts published pages on this very origin: a `fetch("/auth/token?
+    // format=json")` from inside one of them is same-origin, rides the viewer's
+    // session cookie, and walks away with a 30-day API bearer for that person.
+    // Minting is a thing a PERSON does — require a real navigation. The CLI
+    // login opens a browser, so it goes through this path unchanged; token
+    // renewal for a client that already holds one is /auth/token/refresh.
+    if (!isNavigation(req)) {
+      return new Response("token must be minted by a browser navigation", {
+        status: 403,
+        headers: { ...CORS, "Cache-Control": "no-store" },
+      });
     }
     const sess = readSession(req, cfg.sessionSecret, nowSec);
     if (!sess) {

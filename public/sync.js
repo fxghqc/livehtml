@@ -139,38 +139,119 @@
   // ---- State + WebSocket ----
 
   const room = defaultRoom();
+  // Room capability injected by the page GET: it says which room this page may
+  // join (and which it may read), nothing about who the viewer is — identity is
+  // still the localStorage clientId plus whatever /auth/me verifies. Empty when
+  // the deployment runs no login gate, which is also when the server asks for none.
+  const token = (SCRIPT && SCRIPT.dataset && SCRIPT.dataset.token) || "";
   let myId = loadClientId();
   let user = loadUser();
 
   const bindings = new Map(); // key -> Set<HTMLElement>
   let state = {};
   let peers = [];
+  // Server-maintained roster {uid: name}, carried in the reserved `__users`
+  // state key. Split out of `state` (so it never binds and never flashes) and
+  // exposed read-only via LiveHtml.users, so a page can put a name on a
+  // participant who has already left — `peers` only lists live connections.
+  let roster = {};
   let ws = null;
   let connected = false;
   let backoff = 500;
   let suppress = false; // suppress events while applying remote updates
   let pendingOutbox = [];
+  let retryTimer = null; // armed while the server has throttled us
   let authedIdentity = false;
   let deniedLogin = false;
 
   const listeners = new Set();
   let notifying = false;
 
+  function safeInvoke(cb, snap) {
+    try {
+      cb(snap);
+    } catch (e) {
+      console.warn("[livehtml] onChange 回调抛错（已忽略）:", e);
+    }
+  }
+
+  // The server injects sync.js into <head>, so a top-level onChange/watchRoom
+  // runs before the DOM its callback wants to render into exists. Hold the
+  // first callback until the document is parsed. The membership check covers a
+  // subscriber that unsubscribed inside that window.
+  function firstCall(set, cb, snap) {
+    const fire = function () {
+      if (set.has(cb)) safeInvoke(cb, snap());
+    };
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", fire, { once: true });
+    } else {
+      fire();
+    }
+  }
+
   function notifyListeners() {
     if (notifying) return; // a callback calling LiveHtml.set must not recurse
     notifying = true;
     try {
       const snap = { ...state };
-      for (const cb of Array.from(listeners)) {
-        try {
-          cb(snap);
-        } catch (e) {
-          console.warn("[livehtml] onChange 回调抛错（已忽略）:", e);
-        }
-      }
+      for (const cb of Array.from(listeners)) safeInvoke(cb, snap);
     } finally {
       notifying = false;
     }
+  }
+
+  // ---- Rooms this page declared `--read` on at publish time ----
+  // The server attaches them at connect and pushes their frames wrapped in
+  // {t:"room", room, msg}, so watchRoom is purely local: nothing to request,
+  // and a reconnect restores the subscriptions without client bookkeeping.
+  // A watched room's state is passed through as-is, `__users` included — a
+  // dashboard usually wants those names.
+
+  const roomStates = new Map();
+  const roomWatchers = new Map();
+
+  function roomSnapshot(r) {
+    return { ...(roomStates.get(r) || {}) };
+  }
+
+  function applyRoomFrame(r, m) {
+    if (m.t === "init" || m.t === "replace") {
+      roomStates.set(r, { ...(m.state || {}) });
+    } else if (m.t === "set" && typeof m.key === "string") {
+      const cur = roomSnapshot(r);
+      cur[m.key] = m.v;
+      roomStates.set(r, cur);
+    } else if (m.t === "del" && typeof m.key === "string") {
+      const cur = roomSnapshot(r);
+      delete cur[m.key];
+      roomStates.set(r, cur);
+    } else {
+      return; // pres and friends carry no state for a read-only subscriber
+    }
+    const set = roomWatchers.get(r);
+    if (!set) return;
+    const snap = roomSnapshot(r);
+    for (const cb of Array.from(set)) safeInvoke(cb, snap);
+  }
+
+  function watchRoom(r, cb) {
+    if (typeof r !== "string" || typeof cb !== "function") {
+      console.warn("[livehtml] LiveHtml.watchRoom(房间, 函数) 参数不对，已忽略");
+      return function () {};
+    }
+    let set = roomWatchers.get(r);
+    if (!set) {
+      set = new Set();
+      roomWatchers.set(r, set);
+    }
+    set.add(cb);
+    firstCall(set, cb, function () {
+      return roomSnapshot(r);
+    });
+    return function () {
+      set.delete(cb);
+    };
   }
 
   function bind(el) {
@@ -237,11 +318,21 @@
   // element declares data-default, show the default instead of wiping to empty —
   // and seed that default back into shared state so it persists across reloads.
   // Elements WITHOUT data-default keep the old behavior (blank -> empty).
+  //
+  // The seed WRITE is skipped for a `~` (live-only) key; showing the default
+  // locally is not. The write's whole purpose is "so it persists across
+  // reloads", which a `~` key does not do by definition. And since the server
+  // reclaims an unwritten `~` key and fans the eviction out as an ordinary
+  // `del`, this path is on the receiving end of that frame — a seed here would
+  // answer every eviction by re-publishing the default, overwriting whatever a
+  // participant had typed and re-stamping the key so the reclaim never
+  // completes. A viewer that merely received a key's deletion must not
+  // republish it.
   function applyValueWithDefault(el, key, v) {
     const def = el.dataset ? el.dataset.default : undefined;
     if (def !== undefined && blank(v)) {
       setVal(el, def);
-      if (blank(state[key])) {
+      if (blank(state[key]) && key.charAt(0) !== "~") {
         state[key] = def;
         sendMsg({ t: "set", key, v: def });
       }
@@ -279,7 +370,15 @@
   }
 
   function applyFullState(newState) {
-    state = { ...newState };
+    // Split the reserved `__users` roster out before it can bind or flash. A
+    // payload without `__users` (an unauthenticated room, or a server predating
+    // the roster) keeps the current one rather than flickering names away.
+    const next = { ...newState };
+    if (next.__users && typeof next.__users === "object" && !Array.isArray(next.__users)) {
+      roster = next.__users;
+    }
+    delete next.__users;
+    state = next;
     suppress = true;
     try {
       for (const [key, set] of bindings) {
@@ -294,9 +393,56 @@
     }
   }
 
+  // The outbox is last-wins per key: `set` and `del` are both last-wins on the
+  // server, so a queued op is worthless once a newer one for the same key
+  // exists. Without this, a page that keeps writing while the socket is down
+  // queues one op per write and replays the whole pile on reconnect; with it
+  // the backlog stays O(keys) no matter the write rate.
+  function outboxId(msg) {
+    if (msg.t === "set" || msg.t === "del") {
+      return typeof msg.key === "string" ? "k:" + msg.key : null;
+    }
+    if (msg.t === "pres") return "pres";
+    return null;
+  }
+
+  function queueMsg(msg) {
+    const id = outboxId(msg);
+    if (id) {
+      for (let i = 0; i < pendingOutbox.length; i++) {
+        if (outboxId(pendingOutbox[i]) === id) {
+          pendingOutbox.splice(i, 1);
+          break;
+        }
+      }
+    }
+    pendingOutbox.push(msg);
+  }
+
+  // A throttled op sits in the outbox until the window the server named has
+  // passed. One shared timer owns that schedule, so a page that keeps writing
+  // through a throttle does not turn into a stream of individually-refused
+  // messages — which is how a rate-limited page ends up sending MORE than an
+  // unlimited one.
+  function scheduleRetry(ms) {
+    if (retryTimer) return;
+    retryTimer = setTimeout(function () {
+      retryTimer = null;
+      flushOutbox();
+    }, ms > 0 ? ms : 1000);
+  }
+
+  function flushOutbox() {
+    if (retryTimer || !pendingOutbox.length) return;
+    if (!ws || ws.readyState !== 1) return;
+    const items = pendingOutbox;
+    pendingOutbox = [];
+    for (const m of items) ws.send(JSON.stringify(m));
+  }
+
   function sendMsg(msg) {
-    if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg));
-    else pendingOutbox.push(msg);
+    if (ws && ws.readyState === 1 && !retryTimer) ws.send(JSON.stringify(msg));
+    else queueMsg(msg);
   }
 
   function connect() {
@@ -305,10 +451,9 @@
       connected = true;
       backoff = 500;
       ws.send(
-        JSON.stringify({ t: "hi", room, clientId: myId, user }),
+        JSON.stringify({ t: "hi", room, clientId: myId, user, token }),
       );
-      for (const m of pendingOutbox) ws.send(JSON.stringify(m));
-      pendingOutbox = [];
+      flushOutbox();
       updateChip();
     };
     ws.onmessage = (ev) => {
@@ -330,11 +475,19 @@
           notifyListeners();
           break;
         case "set":
+          if (msg.key === "__users") {
+            // Reserved roster update: refresh LiveHtml.users, never touch
+            // state or the data-live bindings.
+            if (msg.v && typeof msg.v === "object") roster = msg.v;
+            notifyListeners();
+            break;
+          }
           applyKey(msg.key, msg.v);
           flashChange(msg.key, msg.by);
           notifyListeners();
           break;
         case "del":
+          if (msg.key === "__users") break; // the server never deletes the roster
           applyKey(msg.key, undefined);
           flashChange(msg.key, msg.by);
           notifyListeners();
@@ -348,10 +501,36 @@
           updateChip();
           notifyListeners();
           break;
+        case "room":
+          // A read-only room this page declared at publish time.
+          if (typeof msg.room === "string" && msg.msg) applyRoomFrame(msg.room, msg.msg);
+          break;
+        case "throttled":
+          // That op was dropped. Re-queue the page's CURRENT value for the key
+          // rather than the dropped one — by now the page may have written
+          // something newer, and resurrecting the old value would undo it.
+          if (typeof msg.key === "string") {
+            queueMsg(
+              msg.key in state
+                ? { t: "set", key: msg.key, v: state[msg.key] }
+                : { t: "del", key: msg.key },
+            );
+          }
+          scheduleRetry(msg.retryAfterMs);
+          break;
+        case "too_large":
+          console.warn(
+            "[livehtml] 单条写入超过服务端上限 " + msg.limit + " 字节，已被拒绝",
+          );
+          break;
         case "denied":
           deniedLogin = true;
           try { ws.close(); } catch {}
-          showLoginNeeded();
+          // `room` = the page's room capability is missing or expired. The page
+          // GET is the only thing that mints one, so reloading is the fix —
+          // and if the session lapsed too, that reload lands on the login page.
+          if (msg.reason === "room") showReloadNeeded();
+          else showLoginNeeded();
           break;
       }
     };
@@ -373,6 +552,11 @@
   // ---- Presence chip UI ----
 
   let chip, chipDot, chipCount, chipPanel;
+
+  function showReloadNeeded() {
+    if (chipCount) chipCount.textContent = "请刷新页面";
+    if (chipDot) chipDot.style.background = "#ef4444";
+  }
 
   function showLoginNeeded() {
     if (chipCount) chipCount.textContent = "需要登录";
@@ -573,20 +757,24 @@
       return () => {};
     }
     listeners.add(cb);
-    try {
-      cb({ ...state });
-    } catch (e) {
-      console.warn("[livehtml] onChange 回调抛错（已忽略）:", e);
-    }
+    firstCall(listeners, cb, function () {
+      return { ...state };
+    });
     return () => listeners.delete(cb);
   }
 
-  window.LiveHtml = {
+  const api = {
     get state() {
       return { ...state };
     },
     get peers() {
       return peers.slice();
+    },
+    get users() {
+      // {uid: name} for everyone the server has seen sign in to this room,
+      // including people who have since left — render "who voted" via
+      // LiveHtml.users[uid]. Only populated behind the login gate. Snapshot copy.
+      return { ...roster };
     },
     get room() {
       return room;
@@ -601,6 +789,7 @@
     onStateChange: onChange,
     subscribe: onChange,
     getState: () => ({ ...state }),
+    watchRoom,
     setUser(u) {
       user = typeof u === "string" ? { name: u } : u;
       if (user.name) saveUserName(user.name);
@@ -608,18 +797,45 @@
       updateChip();
     },
     set(key, v) {
+      if (String(key).startsWith("__")) {
+        console.warn("[livehtml] " + key + " 是服务端保留键，页面不可写");
+        return;
+      }
       state[key] = v;
       sendMsg({ t: "set", key, v });
       applyKey(key, v);
       notifyListeners();
     },
     del(key) {
+      if (String(key).startsWith("__")) {
+        console.warn("[livehtml] " + key + " 是服务端保留键，页面不可写");
+        return;
+      }
       delete state[key];
       sendMsg({ t: "del", key });
       applyKey(key, undefined);
       notifyListeners();
     },
   };
+
+  // Warning-net: a hallucinated LiveHtml member (agent-generated pages reach
+  // for LiveHtml.watch/on/subscribeState all the time) degrades to a
+  // console.warn plus a Promise of the current state snapshot, instead of a
+  // TypeError that kills the whole page <script>. Real members above never
+  // reach the trap; symbols and then/catch/finally return undefined so
+  // LiveHtml is never mistaken for a thenable.
+  window.LiveHtml = new Proxy(api, {
+    get(target, prop) {
+      if (prop in target) return target[prop];
+      if (typeof prop === "symbol" || prop === "then" || prop === "catch" || prop === "finally") {
+        return undefined;
+      }
+      return function () {
+        console.warn("LiveHtml." + String(prop) + " 不存在；订阅状态变化用 LiveHtml.onChange(fn)");
+        return Promise.resolve({ ...state });
+      };
+    },
+  });
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", start);

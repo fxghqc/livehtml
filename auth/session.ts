@@ -96,3 +96,36 @@ export function verifyApiToken(token: string, secret: string, nowSec: number): {
   if (!v || v.kind !== API_TOKEN_KIND || typeof v.uid !== "string") return null;
   return { uid: v.uid, name: typeof v.name === "string" ? v.name : v.uid };
 }
+
+export const ROOM_TOKEN_KIND = "room";
+
+// A room token is a pure capability: "the holder passed the page GET gate for
+// this room, and may additionally READ these other rooms". It deliberately
+// carries NO uid — `readSession` accepts any signed payload with a `uid`
+// string, so a token with one could be replayed as a session cookie. Identity
+// stays exactly where it was (session cookie for the name, client-chosen
+// clientId for presence); this only answers "which rooms".
+export function signRoomToken(
+  room: string,
+  reads: string[],
+  ttlSec: number,
+  secret: string,
+  nowSec: number,
+): string {
+  return signToken({ room, reads, kind: ROOM_TOKEN_KIND, exp: nowSec + ttlSec }, secret);
+}
+
+// Returns the readable-room list when the token is valid FOR THIS ROOM, else
+// null. The room is checked here rather than by the caller so no call site can
+// forget it and turn a token for one room into a key to another.
+export function verifyRoomToken(
+  token: string,
+  room: string,
+  secret: string,
+  nowSec: number,
+): { reads: string[] } | null {
+  const v = verifyToken<any>(token, secret, nowSec);
+  if (!v || v.kind !== ROOM_TOKEN_KIND || v.room !== room) return null;
+  const reads = Array.isArray(v.reads) ? v.reads.filter((r: unknown) => typeof r === "string") : [];
+  return { reads };
+}

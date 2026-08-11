@@ -10,6 +10,7 @@ export interface AuthConfig {
   apiTokenEnabled: boolean;
   apiToken: string;
   apiTokenTtlSec: number;
+  roomTokenTtlSec: number;
 }
 
 export function loadAuthConfig(env: Record<string, string | undefined>): AuthConfig {
@@ -38,6 +39,15 @@ export function loadAuthConfig(env: Record<string, string | undefined>): AuthCon
     apiTokenTtlSec: (() => {
       const t = Number(env.API_TOKEN_TTL_SEC);
       return Number.isFinite(t) && t > 0 ? Math.floor(t) : 2592000;
+    })(),
+    // Minted per page GET and held by an open page for as long as it stays
+    // open, with no refresh path — so it outlives a session on purpose. An
+    // expired one shows up as a `denied` frame and is fixed by reloading the
+    // page. Revoking early means rotating SESSION_SECRET (which also drops
+    // sessions and api tokens).
+    roomTokenTtlSec: (() => {
+      const t = Number(env.ROOM_TOKEN_TTL_SEC);
+      return Number.isFinite(t) && t > 0 ? Math.floor(t) : 604800;
     })(),
     apiTokenEnabled: apiToken.length > 0,
     apiToken,

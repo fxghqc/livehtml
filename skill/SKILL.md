@@ -40,14 +40,14 @@ bun ~/.claude/skills/livehtml/scripts/livehtml.ts <子命令>   # 通用（路�
 
 ## 两步走
 
-1. **写 HTML**：加 `data-live` 属性 + 一行 `<script src="/sync.js">`（**相对路径**即可——页面与 sync.js 同源，无需写死 base-url）。
+1. **写 HTML**：加 `data-live` 属性即可。同步脚本由服务端在提供页面时自动注入，你不用写 `<script src="/sync.js">`（写了也无妨，会被换成服务端那份）。
 2. **`livehtml put <key> page.html`** → `…/pages/<key>` 立即可分享。
 
 无构建、无配置、无需碰 MinIO。
 
 ## 最小 HTML 模板
 
-`<script>` 标签就是全部接入 —— 不用 `<meta>`、不用初始化、不用手填 room id：
+加个属性就是全部接入 —— 不用 `<script>`、不用 `<meta>`、不用初始化、不用手填 room id：
 
 ```bash
 cat > page.html <<'EOF'
@@ -59,8 +59,6 @@ cat > page.html <<'EOF'
   <!-- 任何要同步的元素加 data-live="<唯一key>" -->
   <input type="checkbox" data-live="task-1"> 任务一
   <textarea data-live="notes"></textarea>
-
-  <script src="/sync.js"></script>
 </body>
 </html>
 EOF
@@ -68,9 +66,9 @@ EOF
 livehtml put my/page page.html        # 上传，URL = …/pages/my/page
 ```
 
-`<script src="/sync.js">` 用相对路径，浏览器会解析成页面同源的地址，所以 HTML 里不用出现 base-url；用绝对地址 `$LIVEHTML_BASE_URL/sync.js` 也行。
+**脚本和 room id 都由服务端注入**：页面经 `/pages/<key>` 提供时，服务端剥掉页面自带的 sync.js 标签、插入自己那份，并把 room id（= `pages/<key>`）和房间凭证写进标签属性。URL = MinIO key = state room，一个标识贯穿，页面里不用出现 base-url，也不要自己写 `data-room`（会被覆盖）。
 
-**为什么 room id 不用 meta**：页面在 `/pages/foo/bar` 提供时，sync.js 用 `location.pathname` 自动推导 room id。URL = MinIO key = state room，一个标识贯穿。
+脚本注入在 `<head>`，所以 `window.LiveHtml` 在你的脚本之前就绪，顶层直接调用是安全的。
 
 > 原始 HTTP 等价：`curl -X PUT --data-binary @page.html $LIVEHTML_BASE_URL/pages/<key>`（受保护部署再加 Bearer 头）。
 
@@ -325,6 +323,67 @@ LiveHtml.set("vote:" + voteKey(), card);                                   // �
 
 注：写操作广播里的 `by` **永远**是服务端校验过的 `userId`（可信归属），与上面展示用的 key 相互独立——别把 `by` 当成连接 id。
 
+**显示已经离线的人的名字**：`LiveHtml.peers` 只有当前在线的连接，一个人关掉标签页就从里面消失，汇总时拿不到姓名。用 `LiveHtml.users` —— 服务端维护的花名册 `{userId: 姓名}`，含所有登录过这个房间的人（仅登录门开启时有内容，匿名访客不入册）。计票只数自己前缀的键，姓名从花名册取：
+
+```js
+LiveHtml.onChange(function (state) {
+  var who = [];
+  Object.keys(state).forEach(function (k) {
+    if (!k.startsWith("vote:")) return;
+    who.push((LiveHtml.users[k.slice(5)] || "访客") + "→" + state[k]);
+  });
+  document.getElementById("who").textContent = who.join("、");
+});
+```
+
+## 发布被拒绝了怎么办
+
+`livehtml put` 发布前，服务端会静态检查一遍 HTML。**确定会坏**的写法直接拒绝（HTTP 400），并把原因作为数据返回——读 `errors`、改完重发即可，不用问人：
+
+- `data-live` 挂在包着别的元素的容器上（`<div data-live="x"><input></div>`）——会用 textContent 同步、把容器里的内容清空。改成挂在里面的控件本身。
+- 页面 JS 调了不存在的成员（`LiveHtml.watch`、`LiveHtml.emit` 之类）——运行时抛错会让整个 `<script>` 停摆。
+- `LiveHtml.state(...)` 当函数调——它是属性，直接读 `LiveHtml.state` 或用 `LiveHtml.getState()`。
+
+`warnings` 不拦发布。确信检查判错了，`livehtml put ... --no-lint` 跳过。
+
+`LiveHtml` 的全部成员：`state` / `peers` / `users` / `room` / `me` / `onChange(fn)` / `onStateChange` / `subscribe` / `getState()` / `setUser(名字)` / `set(键,值)` / `del(键)` / `watchRoom(房间,fn)`。
+
+## 汇总看板（可选·进阶）：读别的页面的数据
+
+默认一个页面只能读写自己的数据。要做跨页汇总，发布时声明可读哪些房间：
+
+```bash
+livehtml put board board.html --read pages/team-a,pages/team-b
+```
+
+页面里订阅（只读，写不进去）：
+
+```js
+LiveHtml.watchRoom("pages/team-a", function (state) {
+  document.getElementById("a-done").textContent =
+    Object.values(state).filter(Boolean).length;
+});
+```
+
+断线重连自动恢复，不用自己重订阅。被读房间的花名册也在里面（`state.__users`）。
+
+> 注意：声明可读 = 把那些房间的数据**向所有能打开这个看板的人开放**，哪怕他们本来打不开那些页面。看板若是 `--public`，那就是对所有能访问服务的人开放。
+
+## 高频状态（可选·进阶）：`~` 前缀
+
+光标位置、"正在输入"、每秒几十次的快照——这类**一秒后就没价值**的状态，键名前面加 `~`：
+
+```js
+LiveHtml.set("~cursor:" + LiveHtml.me.id, { x: 12, y: 40 });
+```
+
+`~` 键照常广播给所有人、照常出现在 `LiveHtml.state` 里，但**不落盘、不推进版本号**——它不会把每次移动都写一遍磁盘，也不会把 agent 侧的 `?wait=` 长轮询（Cookbook 4）反复叫醒。代价两条：
+
+- **不持久**。刷新/重启后就没了；`data-live` 绑在 `~` 键上的元素回落到 `data-default`。
+- **会被回收**。超过 30 秒（部署可配）没重写的 `~` 键，服务端删掉并广播一条 `del`（`by: ""`、`src: "server"`）。按 `~` 该有的频率写就永远不会被回收，被回收的是写者已经离开的键。
+
+所以**别拿 `~` 当存储**：「当前页码」「选中的 tab」这种很久才写一次的值用普通键；写多频繁都无所谓的值才用 `~`。
+
 ## Managing pages
 
 ```bash
@@ -347,12 +406,13 @@ curl -X DELETE $LIVEHTML_BASE_URL/pages/<key>
 
 ## Anti-patterns — don't do these
 
-- **Don't expect livehtml to inject anything**. What you PUT is exactly what gets served. The boilerplate must be in the HTML you generate; no `<script>` tag will appear by magic.
+- **Don't hand-write `data-room`**. The server injects the room id when it serves the page; a hard-coded one is overwritten. Same for the sync.js `<script>` tag — write it or don't, the server replaces it either way.
 - **Don't write directly to the MinIO backend**. The whole point of `PUT /pages/` is that one identifier covers HTML + state + URL. Bypassing it splits naming and causes orphan state.
 - **Don't use livehtml for true concurrent text editing**. The sync is last-write-wins, not CRDT. Two users typing simultaneously in the same `<textarea>` will overwrite each other character-by-character. Fine for "one person edits at a time" or "occasional updates"; not fine for Google-Docs-style collaboration. For that, use Yjs.
 - **Don't pick a random `data-live` key per render**. The key is the persistence identity. If you regenerate HTML with new keys, the old state becomes unreachable.
 - **Don't try to nest `data-live` containers**. Each attribute should be on a leaf interactive element. A `<div data-live="x">` containing other `data-live` elements gives unpredictable results.
-- **Don't put secrets in `data-live` values**. State is readable by anyone with the URL — there's no auth.
+- **Don't put secrets in `data-live` values**. State is readable by anyone who can open the page.
+- **Don't write more than ~60 times a second** from one page. Past that the server drops the extra writes and tells sync.js to back off (nothing is lost, it just lands later). A single write also caps at 256KB — don't stuff an image into one key.
 
 ## Optional: customizing user presence
 

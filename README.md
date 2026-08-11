@@ -82,6 +82,52 @@ MINIO_BUCKET=pages bun start
 
 当 HTML 用 `file://` 协议打开时，`location.pathname` 是绝对路径，跨设备不一致。**给跨用户共享的 HTML 显式设置 `data-room`**。
 
+## 服务端注入（`/pages/<key>` 提供的页面）
+
+通过 `/pages/<key>` 提供页面时，服务端会在**发给浏览器的那一刻**改写 HTML（存储里的原始字节不变）：剥掉页面自带的 `<script src=".../sync.js">`，插入自己的一份，带上两个属性：
+
+```html
+<script src="/sync.js" data-room="pages/<key>" data-token="<房间凭证>"></script>
+```
+
+- 页面 HTML **不必**自己写那行 script；写了也没关系，会被换掉。
+- `data-room` 由服务端说了算，页面里手写的 `data-room` 会被覆盖——room 是页面的身份，交给客户端从 `location.pathname` 猜，换个路径就错。
+- **房间凭证**只回答"这个连接能进哪个房间"，不含任何身份信息。身份仍然是 localStorage 的 clientId + `/auth/me` 校验的姓名，一个字没变。
+- 注入点在 `<head>`，所以 `window.LiveHtml` 在页面自己的脚本之前就绪，顶层直接调不会 ReferenceError。`sync.js` 会把首个 `onChange`/`watchRoom` 回调推迟到 DOM 解析完再触发。
+- 用 `file://` 直接打开、或托管在别处的页面不经过这条路径，仍需自己写 script 标签；开着登录门的部署下它们连不上（没有凭证）。
+
+## 页面能读别的页面（只读）
+
+汇总看板这类页面，发布时声明可读哪些房间：
+
+```bash
+livehtml put board board.html --read pages/a,pages/b
+```
+
+打开页面时服务端自动把这些房间接上，页面里直接订阅：
+
+```js
+LiveHtml.watchRoom("pages/a", function (state) { /* pages/a 变了 */ });
+```
+
+只读：页面的 `LiveHtml.set` 永远只写自己的房间。没声明的房间一个字都读不到。断线重连自动恢复，不用自己重订阅。被读房间的 `__users` 会原样出现在 state 里（看板通常正需要这些名字）。
+
+> ⚠ 声明可读 = **把那些房间的数据向所有能打开本页的人开放**，哪怕对方本来无权打开那些页面；本页若是 `--public`，那就是向所有能访问服务的人开放。发布时会返回一条 warning 提醒。
+
+## 上行护栏
+
+- 单条消息上限 `OPS_MAX_BYTES`（默认 256KB），在解析之前就拒，返回 `{t:"too_large"}`。
+- 写入速率 `OPS_RATE_PER_SEC`（默认 60/秒，按 (房间, 写者) 计，突发 2 倍；`0` 关闭）。超限该条被丢弃并返回 `{t:"throttled", key, retryAfterMs}`，`sync.js` 收到后停发、到点用**当前**值重发那个键——不会用被丢弃的旧值覆盖页面后来写的新值。
+- 计数的写者：登录用户按 uid（开几个标签页不涨额度），匿名按连接。**不按页面自称的 clientId**，那是可以随便换的。
+
+## 状态键前缀：`~` 与 `__`
+
+两个前缀是特殊的，且互相正交：
+
+- **`~` = 只活在内存里（live-only）**。像普通 key 一样广播、一样出现在 `init` 和 `GET /state`，但**不落盘**、**不推进版本号**——所以它不产生新 etag，也不会唤醒挂着的 `?wait=` 长轮询。给光标、正在输入提示、高频快照这类"一秒后就没价值"的状态用；用普通 key 装这些，每次写都要触发一次去抖磁盘写和一次 agent 侧的变更唤醒。
+  超过 `TRANSIENT_TTL_SEC`（默认 30 秒，`0` = 关闭）没被重写的 `~` key 会被服务端回收，回收以一条 `del` 广播出去，带 `by: ""` + `src: "server"`。按 `~` 该有的频率写的人永远不会被回收，被回收的是写者已经离开的 key。**别拿 `~` 当存储**（"当前页码"这种很久才写一次的值）——那种值本来就该用普通 key。
+- **`__` = 服务端保留**（目前只有 `__users`）。浏览器侧写不进去：WS 上的 `set`/`del` 被忽略，`LiveHtml.set` 直接拒绝并告警；HTTP 整体覆盖（`PUT`/`DELETE /state`）会剥掉调用方传的 `__users`、把当前值原样带过去。除此之外就是一个普通的持久化 key。
+
 ## 用户身份（presence）
 
 右上角浮动一个小 chip 显示在线人数，点开可看到所有用户并改名。默认随机分配 `User-XXXX`。三种方式自定义：
@@ -96,6 +142,18 @@ window.LiveHtmlUser = { name: "范晓" };  // 在 sync.js 加载前
 
 ```js
 window.LiveHtml.setUser("范晓");  // 运行时改
+```
+
+`LiveHtml.peers` 只有**当前在线**的连接。要给已经离开的人显示名字，用 `LiveHtml.users` —— 服务端维护的花名册 `{userId: 姓名}`，记录所有登录过这个房间的人（仅在开了登录门时有内容，匿名访客不入册）：
+
+```js
+LiveHtml.onChange(function (state) {
+  Object.keys(state).forEach(function (k) {
+    if (!k.startsWith("vote:")) return;
+    var uid = k.slice(5);
+    console.log((LiveHtml.users[uid] || "访客") + " 投了 " + state[k]);
+  });
+});
 ```
 
 ## HTTP API
@@ -256,11 +314,13 @@ WS 端点：`ws://host:port/ws`，消息全是 JSON。
 **Client → Server**
 
 ```jsonc
-{ "t": "hi",  "room": "demo", "clientId": "uuid", "user": {...} }
+{ "t": "hi",  "room": "demo", "clientId": "uuid", "user": {...}, "token": "<房间凭证>" }
 { "t": "set", "key": "task-1", "v": true }
 { "t": "del", "key": "task-1" }
 { "t": "pres", "v": { "name": "范晓" } }
 ```
+
+开着钉钉登录门时，`hi` 必须带 `token`（页面 GET 注入的房间凭证，且必须是**这个** room 的），否则回 `{"t":"denied","reason":"room"}` 并断开。升级请求带了合法 API bearer 的连接（agent CLI、自定义客户端）不需要 token。门关着时不校验，行为与以前一致。
 
 **Server → Client**
 
@@ -268,12 +328,20 @@ WS 端点：`ws://host:port/ws`，消息全是 JSON。
 { "t": "init", "room": "demo", "state": {...}, "peers": [...], "you": "id" }
 { "t": "set", "key": "...", "v": ..., "by": "peerId" }
 { "t": "del", "key": "...", "by": "peerId" }
+{ "t": "del", "key": "~...", "by": "", "src": "server" }  // `~` key 到期被回收
 { "t": "replace", "state": {...}, "by": "..." }  // 整体替换 (来自 HTTP PUT)
 { "t": "pres", "peers": [...] }
+{ "t": "room", "room": "pages/a", "msg": {...} }   // --read 声明的只读房间，msg 是该房间的原始帧
+{ "t": "throttled", "key": "...", "retryAfterMs": 120 }  // 该条被限流丢弃
+{ "t": "too_large", "limit": 262144 }              // 该条超过单条大小上限
+{ "t": "denied", "reason": "room" | "login_required" }
 ```
+
+客户端 `set`/`del` 里 `__` 开头的 key 会被服务端静默忽略（见「状态键前缀」）。回收帧的 `by` 恒为空串——参与者的 `by` 是 clientId 或校验过的 userId，永远非空，所以按作者过滤 `del` 的页面可以靠 `by === "" && src === "server"` 把服务端回收和别人的删除区分开。
 
 ## 已知限制
 
+- **Cookie 只对人有效**：开着登录门时，受保护页面的 HTML 和 `/auth/token` 都只服务**浏览器导航**（`Sec-Fetch-Dest: document`/`iframe`，或回落到 `Accept: text/html`）。因为 livehtml 把页面托管在自己的域名下，页面里的 `fetch()` 是同源的、会自动带上访问者的 cookie——不挡这一层，一个页面就能替访问者生成长期 API token、或把别的受保护页面整个读走。带 Bearer 的调用（CLI、curl）和公开页不受影响；用 curl 抓受保护页面的 HTML 要么带 token，要么显式加 `-H "Accept: text/html"`
 - **不是 CRDT**：两人同时编辑同一文本字段时，后写覆盖先写。对 checkbox/select/数值这种"原子值"完全 OK；不适合做多人同时编辑长文档
 - **文本输入冲突保护**：远端更新到达时，如果当前用户正在 focus 该字段，远端更新会被忽略（避免打断输入）
 - **鉴权可选**：默认不带鉴权，房间名足够长/随机就够用；公网/局域网共享可开钉钉登录门 + API token 门（见上方「登录与鉴权」）

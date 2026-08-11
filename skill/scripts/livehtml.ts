@@ -217,6 +217,8 @@ function usage(): void {
 
   livehtml login                        钉钉扫码登录，拿/续期个人 token
   livehtml put <key> <file> [--public]  上传 HTML 页面（--public = 免登浏览）
+                            [--read a,b]  声明本页可只读哪些房间（汇总看板用）
+                            [--no-lint]   跳过发布前检查（默认拦必坏写法）
   livehtml get <key>                    读回该页状态 (JSON)
   livehtml set <key> '<json>'           整体写入该页状态
   livehtml watch <key>                  阻塞至下次有人改动（最多 60s）
@@ -237,9 +239,12 @@ try {
       break;
     case "put": {
       const [key, file] = positionals();
-      if (!key || !file) die("用法: livehtml put <key> <file> [--public]");
+      if (!key || !file) die("用法: livehtml put <key> <file> [--public] [--read <room>,<room>]");
       const headers: Record<string, string> = {};
       if (flag("--public")) headers["X-Public"] = "1";
+      const read = optv("--read");
+      if (read) headers["X-Read-Rooms"] = read;
+      if (flag("--no-lint")) headers["X-Skip-Lint"] = "1";
       await printResp(await api("PUT", "/pages/" + encKey(key), { body: readInput(file), headers }));
       break;
     }

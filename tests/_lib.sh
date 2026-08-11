@@ -55,6 +55,9 @@ start_server() {
   # resolves to the rundir, and state/ is isolated per test.
   SERVER_RUNDIR="$(mktemp -d -t livehtml-test-run-XXXXXX)"
   cp "$REPO_ROOT/server.ts" "$SERVER_RUNDIR/server.ts"
+  ln -s "$REPO_ROOT/inject.ts" "$SERVER_RUNDIR/inject.ts"
+  ln -s "$REPO_ROOT/limits.ts" "$SERVER_RUNDIR/limits.ts"
+  ln -s "$REPO_ROOT/lint.ts" "$SERVER_RUNDIR/lint.ts"
   ln -s "$REPO_ROOT/public" "$SERVER_RUNDIR/public"
   ln -s "$REPO_ROOT/examples" "$SERVER_RUNDIR/examples"
   ln -s "$REPO_ROOT/skill" "$SERVER_RUNDIR/skill"
@@ -178,6 +181,20 @@ b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 mint_session() {
   local json payload sig
   json="{\"uid\":\"$1\",\"name\":\"$2\",\"exp\":9999999999}"
+  payload=$(printf '%s' "$json" | b64url)
+  sig=$(printf '%s' "$payload" | openssl dgst -sha256 -hmac "$3" -binary | b64url)
+  printf '%s.%s' "$payload" "$sig"
+}
+
+# mint_room_token <room> <reads-csv-or-empty> <secret> — echo a room capability
+# (kind="room"). Mirrors auth/session.ts signRoomToken; deliberately carries no
+# uid, so a forged one can never be replayed as a session cookie.
+mint_room_token() {
+  local reads='[]' json payload sig
+  if [ -n "${2:-}" ]; then
+    reads="[\"$(printf '%s' "$2" | sed 's/,/","/g')\"]"
+  fi
+  json="{\"room\":\"$1\",\"reads\":$reads,\"kind\":\"room\",\"exp\":9999999999}"
   payload=$(printf '%s' "$json" | b64url)
   sig=$(printf '%s' "$payload" | openssl dgst -sha256 -hmac "$3" -binary | b64url)
   printf '%s.%s' "$payload" "$sig"

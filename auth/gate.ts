@@ -52,6 +52,22 @@ export function isLoopbackRedirect(raw: string | null): boolean {
   return host === "127.0.0.1" || host === "localhost" || host === "[::1]";
 }
 
+// True when the request is a browser NAVIGATION (address bar, link, redirect,
+// frame load) rather than script-initiated (fetch/XHR). This is the line that
+// separates "a person went here" from "code running in a published page went
+// here" — and it holds because Sec-Fetch-* are forbidden headers: page JS
+// cannot set or clear them. When a proxy strips them entirely we fall back to
+// the Accept header, which fetch()'s default `*/*` does not satisfy.
+export function isNavigation(req: Request, allowFrame = false): boolean {
+  const mode = req.headers.get("sec-fetch-mode");
+  const dest = req.headers.get("sec-fetch-dest");
+  if (mode || dest) {
+    if (mode !== "navigate") return false;
+    return dest === "document" || (allowFrame && (dest === "iframe" || dest === "frame"));
+  }
+  return (req.headers.get("accept") || "").includes("text/html");
+}
+
 export function humanAllowed(a: { gateOn: boolean; isPublic: boolean; hasSession: boolean }): boolean {
   if (!a.gateOn) return true;
   return a.isPublic || a.hasSession;
@@ -60,6 +76,19 @@ export function humanAllowed(a: { gateOn: boolean; isPublic: boolean; hasSession
 export function parsePublicMeta(metaData: Record<string, string> | undefined): boolean {
   if (!metaData) return false;
   return metaData.public === "1" || metaData["x-amz-meta-public"] === "1";
+}
+
+// Rooms a page may READ besides its own, declared at publish time. Stored as
+// one comma-separated object-metadata value; MinIO reports metadata keys with
+// or without the `x-amz-meta-` prefix depending on the call, hence both
+// spellings (same as parsePublicMeta).
+export function parseReadRooms(metaData: Record<string, string> | undefined): string[] {
+  if (!metaData) return [];
+  const raw = metaData["read-rooms"] ?? metaData["x-amz-meta-read-rooms"] ?? "";
+  return String(raw)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 // Maps a room id to the page key whose public-flag governs it, or null if the
