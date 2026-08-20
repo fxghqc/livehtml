@@ -346,7 +346,7 @@ LiveHtml.onChange(function (state) {
 
 `warnings` 不拦发布。确信检查判错了，`livehtml put ... --no-lint` 跳过。
 
-`LiveHtml` 的全部成员：`state` / `peers` / `users` / `room` / `me` / `onChange(fn)` / `onStateChange` / `subscribe` / `getState()` / `setUser(名字)` / `set(键,值)` / `del(键)` / `watchRoom(房间,fn)`。
+`LiveHtml` 的全部成员：`state` / `peers` / `users` / `room` / `me` / `onChange(fn)` / `onStateChange` / `subscribe` / `onFrame(fn)` / `getState()` / `setUser(名字)` / `set(键,值)` / `del(键)` / `watchRoom(房间,fn)`。
 
 ## 汇总看板（可选·进阶）：读别的页面的数据
 
@@ -383,6 +383,8 @@ LiveHtml.set("~cursor:" + LiveHtml.me.id, { x: 12, y: 40 });
 - **会被回收**。超过 30 秒（部署可配）没重写的 `~` 键，服务端删掉并广播一条 `del`（`by: ""`、`src: "server"`）。按 `~` 该有的频率写就永远不会被回收，被回收的是写者已经离开的键。
 
 所以**别拿 `~` 当存储**：「当前页码」「选中的 tab」这种很久才写一次的值用普通键；写多频繁都无所谓的值才用 `~`。
+
+**要做多人实时游戏 / 共享画布 / 实时对局**（大家同时看到彼此每秒几十次的动作）——别只靠上面这几句自己拼，**先读 skill 里的 [`references/gamenet.md`](references/gamenet.md)**：完整的 gamenet 协议（一人一键自报 + `by` 校验 + 心跳/回收比例）加一个可照抄改写的 WS 模板。逐帧授权用 `LiveHtml.onFrame(fn)`——拿每条远端 `set`/`del` 帧的 `{t,key,v,by,src}`；`onChange` 只给 state 快照、不带 `by`，做不了游戏。发到**登录房间**（不加 `--public`），否则所有匿名访客共用一个限流桶、几个人就卡。
 
 ## Managing pages
 

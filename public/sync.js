@@ -201,6 +201,25 @@
     }
   }
 
+  // Per-frame subscription. Unlike onChange (coalesced state snapshots), the
+  // callback gets each remote set/del frame verbatim — {t, key, v, by, src} —
+  // so a page can authorize by writer (`by` is server-stamped from the room
+  // token and unforgeable) or tell a server reclaim of a `~` key (src:"server",
+  // by:"") from a peer's delete. Frames are the wire, not the state: the server
+  // never echoes a writer its own frame, so this never fires for the local
+  // participant. This is the primitive the gamenet recipe needs; ordinary pages
+  // want onChange.
+  const frameListeners = new Set();
+  function notifyFrame(frame) {
+    for (const cb of Array.from(frameListeners)) {
+      try {
+        cb(frame);
+      } catch (e) {
+        console.warn("[livehtml] onFrame 回调抛错（已忽略）:", e);
+      }
+    }
+  }
+
   // ---- Rooms this page declared `--read` on at publish time ----
   // The server attaches them at connect and pushes their frames wrapped in
   // {t:"room", room, msg}, so watchRoom is purely local: nothing to request,
@@ -484,12 +503,14 @@
           }
           applyKey(msg.key, msg.v);
           flashChange(msg.key, msg.by);
+          notifyFrame({ t: "set", key: msg.key, v: msg.v, by: msg.by, src: msg.src });
           notifyListeners();
           break;
         case "del":
           if (msg.key === "__users") break; // the server never deletes the roster
           applyKey(msg.key, undefined);
           flashChange(msg.key, msg.by);
+          notifyFrame({ t: "del", key: msg.key, v: undefined, by: msg.by, src: msg.src });
           notifyListeners();
           break;
         case "replace":
@@ -763,6 +784,18 @@
     return () => listeners.delete(cb);
   }
 
+  // Per-frame subscription — see notifyFrame. The callback gets {t,key,v,by,src}
+  // for every remote set/del. Returns an unsubscribe function. Edge-triggered:
+  // no first-call replay (seed current state from onChange/getState instead).
+  function onFrame(cb) {
+    if (typeof cb !== "function") {
+      console.warn("[livehtml] LiveHtml.onFrame 需要函数参数，已忽略");
+      return () => {};
+    }
+    frameListeners.add(cb);
+    return () => frameListeners.delete(cb);
+  }
+
   const api = {
     get state() {
       return { ...state };
@@ -788,6 +821,7 @@
     onChange,
     onStateChange: onChange,
     subscribe: onChange,
+    onFrame,
     getState: () => ({ ...state }),
     watchRoom,
     setUser(u) {

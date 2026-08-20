@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, rename, unlink } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename, unlink, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
@@ -703,15 +703,29 @@ CLAUDE_DIR="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 CODEX_DIR="\${CODEX_HOME:-$HOME/.codex}"
 CURSOR_DIR="$HOME/.cursor"
 
+# The whole skill bundle to mirror, from the server manifest (newline list).
+# Falls back to the two essentials on an older server without the route.
+FILES=$(curl -fsSL "$BASE/skill/manifest" 2>/dev/null || true)
+[ -n "$FILES" ] || FILES="SKILL.md
+scripts/livehtml.ts"
+
+mirror_bundle() {
+  # \$1 dest dir — fetch every manifest file into it, creating subdirs.
+  echo "$FILES" | while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    mkdir -p "$1/$(dirname "$f")"
+    curl -fsSL "$BASE/skill/$f" -o "$1/$f" || echo "  (warn: skipped $f)"
+  done
+}
+
 n=0
 install_to() {
   # \$1 display name  \$2 agent home  \$3 skills root
   [ -d "$2" ] || return 0
   dest="$3/$SKILL"
-  mkdir -p "$dest/scripts"
-  curl -fsSL "$BASE/skill/SKILL.md" -o "$dest/SKILL.md"
-  curl -fsSL "$BASE/skill/scripts/livehtml.ts" -o "$dest/scripts/livehtml.ts" 2>/dev/null || true
-  echo "✓ $1 → $dest (SKILL.md + scripts/livehtml.ts)"
+  mkdir -p "$dest"
+  mirror_bundle "$dest"
+  echo "✓ $1 → $dest"
   n=$((n + 1))
 }
 
@@ -721,9 +735,8 @@ install_to "Cursor"      "$CURSOR_DIR" "$CURSOR_DIR/skills"
 
 if [ "$n" -eq 0 ]; then
   dest="$CLAUDE_DIR/skills/$SKILL"
-  mkdir -p "$dest/scripts"
-  curl -fsSL "$BASE/skill/SKILL.md" -o "$dest/SKILL.md"
-  curl -fsSL "$BASE/skill/scripts/livehtml.ts" -o "$dest/scripts/livehtml.ts" 2>/dev/null || true
+  mkdir -p "$dest"
+  mirror_bundle "$dest"
   echo "✓ no agent detected; installed for Claude Code → $dest"
 fi
 echo "✓ Done. Restart your agent to pick up the skill."
@@ -761,20 +774,28 @@ $targets = @(
   @{ name = 'Cursor';      home = $cursor; skills = (Join-Path $cursor 'skills') }
 )
 
-$md = (Invoke-WebRequest -Uri "$Base/skill/SKILL.md" -UseBasicParsing).Content
-$login = $null
-try { $login = (Invoke-WebRequest -Uri "$Base/skill/scripts/livehtml.ts" -UseBasicParsing).Content } catch {}
+$files = @('SKILL.md', 'scripts/livehtml.ts')
+try {
+  $list = (Invoke-WebRequest -Uri "$Base/skill/manifest" -UseBasicParsing).Content
+  $parsed = $list -split "\\r?\\n" | Where-Object { $_ -ne '' }
+  if ($parsed.Count -gt 0) { $files = $parsed }
+} catch {}
 function Install-Skill($dest) {
-  New-Item -ItemType Directory -Force -Path (Join-Path $dest 'scripts') | Out-Null
-  [System.IO.File]::WriteAllText((Join-Path $dest 'SKILL.md'), $md)
-  if ($login) { [System.IO.File]::WriteAllText((Join-Path (Join-Path $dest 'scripts') 'livehtml.ts'), $login) }
+  foreach ($f in $files) {
+    $target = Join-Path $dest ($f -replace '/', [IO.Path]::DirectorySeparatorChar)
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+    try {
+      $content = (Invoke-WebRequest -Uri "$Base/skill/$f" -UseBasicParsing).Content
+      [System.IO.File]::WriteAllText($target, $content)
+    } catch { Write-Host "  (warn: skipped $f)" }
+  }
 }
 $n = 0
 foreach ($t in $targets) {
   if (Test-Path $t.home) {
     $dest = Join-Path $t.skills $Skill
     Install-Skill $dest
-    Write-Host "[ok] $($t.name) -> $dest (SKILL.md + scripts/livehtml.ts)"
+    Write-Host "[ok] $($t.name) -> $dest"
     $n++
   }
 }
@@ -787,6 +808,32 @@ Write-Host "Done. Restart your agent. Protected deploy? Run: bun <skills>/liveht
 `;
       return new Response(script, {
         headers: { ...CORS, "Content-Type": "text/plain; charset=utf-8" },
+      });
+    }
+
+    if (path === "/skill/manifest" && req.method === "GET") {
+      // Newline-delimited relative paths of the whole skill bundle, for the
+      // installers to mirror it recursively. Plain text so both sh and
+      // PowerShell parse it without a JSON dependency. Excludes evals/ (dev
+      // data) and dotfiles; a new reference file is picked up with no installer
+      // change.
+      const walk = async (dir: string, prefix = ""): Promise<string[]> => {
+        const out: string[] = [];
+        for (const ent of await readdir(dir, { withFileTypes: true })) {
+          if (ent.name.startsWith(".")) continue;
+          const rel = prefix ? `${prefix}/${ent.name}` : ent.name;
+          if (ent.isDirectory()) {
+            if (rel === "evals") continue;
+            out.push(...(await walk(join(dir, ent.name), rel)));
+          } else if (ent.isFile()) {
+            out.push(rel);
+          }
+        }
+        return out;
+      };
+      const files = (await walk(SKILL_DIR)).sort();
+      return new Response(files.join("\n") + "\n", {
+        headers: { ...CORS, "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
       });
     }
 

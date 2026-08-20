@@ -41,6 +41,7 @@ const LIVEHTML_MEMBERS = new Set([
   "onChange",
   "onStateChange",
   "subscribe",
+  "onFrame",
   "getState",
   "setUser",
   "set",
@@ -50,7 +51,7 @@ const LIVEHTML_MEMBERS = new Set([
 
 const API_REFERENCE =
   "LiveHtml 的全部成员：state / peers / users / room / me / " +
-  "onChange(fn) / onStateChange / subscribe / getState() / setUser(名字) / " +
+  "onChange(fn) / onStateChange / subscribe / onFrame(fn) / getState() / setUser(名字) / " +
   "set(键,值) / del(键) / watchRoom(房间,fn)";
 
 // Comments are stripped before the member scan: prose in a comment mentioning

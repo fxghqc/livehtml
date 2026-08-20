@@ -157,6 +157,27 @@ test("onChange calls back immediately with the current state snapshot", async ()
   expect(calls[0]).toEqual({ a: 1 });
 });
 
+test("onFrame delivers each remote set/del frame verbatim with by and src", async () => {
+  const h = await boot();
+  h.ws().dispatch({ t: "init", you: "me-1", state: {}, peers: [] });
+  const frames: any[] = [];
+  h.win.LiveHtml.onFrame((f: any) => frames.push(f));
+
+  // a peer's set carries the server-stamped writer — the by-check's input
+  h.ws().dispatch({ t: "set", key: "~g:in:u2", v: { x: 1 }, by: "u2" });
+  expect(frames.length).toBe(1);
+  expect(frames[0]).toEqual({ t: "set", key: "~g:in:u2", v: { x: 1 }, by: "u2", src: undefined });
+
+  // a server reclaim of a transient key: src:"server", empty by
+  h.ws().dispatch({ t: "del", key: "~g:in:u2", by: "", src: "server" });
+  expect(frames.length).toBe(2);
+  expect(frames[1]).toEqual({ t: "del", key: "~g:in:u2", v: undefined, by: "", src: "server" });
+
+  // edge-triggered (no on-subscribe replay), and the reserved roster is not a frame
+  h.ws().dispatch({ t: "set", key: "__users", v: { u2: "Bob" }, by: "system" });
+  expect(frames.length).toBe(2);
+});
+
 test("remote init/set/del/replace/pres each notify subscribers", async () => {
   const h = await boot();
   const calls: any[] = [];
